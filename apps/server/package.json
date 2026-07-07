@@ -1,0 +1,33 @@
+{
+  "name": "@anecites/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build:deps": "npm run build --workspace @anecites/db && npm run build --workspace @anecites/shared",
+    "build": "npm run build:deps && tsc -p tsconfig.json",
+    "typecheck": "npm run build:deps && tsc -p tsconfig.json --noEmit",
+    "lint": "npm run typecheck",
+    "test": "npm run build && node --test --test-isolation=none test/*.test.mjs",
+    "smoke:judge0": "npm run build && node scripts/smoke-judge0.mjs",
+    "dev": "node dist/index.js"
+  },
+  "dependencies": {
+    "@anecites/db": "0.0.0",
+    "@anecites/shared": "0.0.0",
+    "express": "5.2.1",
+    "jose": "6.2.3"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "24.13.2"
+  }
+}

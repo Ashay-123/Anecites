@@ -1,0 +1,32 @@
+{
+  "name": "@anecites/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "prisma:validate": "node scripts/run-prisma.mjs validate --schema prisma/schema.prisma",
+    "prisma:generate": "node scripts/run-prisma.mjs generate --schema prisma/schema.prisma",
+    "prisma:migrate:diff": "prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script",
+    "prisma:migrate:create": "node scripts/run-prisma.mjs migrate dev --schema prisma/schema.prisma --name init --create-only",
+    "prisma:migrate:deploy": "node scripts/run-prisma.mjs migrate deploy --schema prisma/schema.prisma",
+    "test:schema": "node --test --test-isolation=none test/*.test.mjs",
+    "build": "npm run prisma:generate && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "npm run typecheck && npm run test:schema",
+    "test": "npm run test:schema && npm run prisma:validate && npm run prisma:migrate:diff && npm run build"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.3"
+  },
+  "devDependencies": {
+    "prisma": "6.19.3"
+  }
+}

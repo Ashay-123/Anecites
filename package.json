@@ -1,0 +1,29 @@
+{
+  "name": "anecites",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AI-proctored technical interview platform.",
+  "packageManager": "npm@11.12.1",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "workspaces": "node scripts/list-workspaces.mjs",
+    "verify:root": "node scripts/verify-root.mjs",
+    "verify:docker": "node scripts/verify-docker.mjs",
+    "verify": "npm run verify:root && npm run verify:docker",
+    "lint": "node scripts/run-workspace-script.mjs lint",
+    "typecheck": "node scripts/run-workspace-script.mjs typecheck",
+    "test": "node scripts/run-workspace-script.mjs test",
+    "build": "node scripts/run-workspace-script.mjs build"
+  },
+  "devDependencies": {
+    "turbo": "2.10.4",
+    "typescript": "6.0.3"
+  }
+}

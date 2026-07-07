@@ -1,0 +1,204 @@
+name: anecites
+
+x-default-logging: &default-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    profiles:
+      - infra
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-anecites}
+      POSTGRES_USER: ${POSTGRES_USER:-anecites}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-anecites_dev_password}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app_internal
+    <<: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    profiles:
+      - infra
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app_internal
+    <<: *default-logging
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    profiles:
+      - infra
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-anecites}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-anecites_dev_password}
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test:
+        - CMD
+        - rabbitmq-diagnostics
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app_internal
+    <<: *default-logging
+
+  minio:
+    image: minio/minio:latest
+    profiles:
+      - infra
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-anecites}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-anecites_dev_password}
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test:
+        - CMD
+        - mc
+        - ready
+        - local
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app_internal
+    <<: *default-logging
+
+  judge0-server:
+    image: ${JUDGE0_IMAGE:-judge0/judge0:latest}
+    profiles:
+      - judge0
+    env_file:
+      - ./judge0.conf
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    ports:
+      - "127.0.0.1:${JUDGE0_PORT:-2358}:2358"
+    depends_on:
+      judge0-db:
+        condition: service_healthy
+      judge0-redis:
+        condition: service_healthy
+    privileged: true
+    networks:
+      - judge0_internal
+      - judge0_ingress
+    <<: *default-logging
+
+  judge0-worker:
+    image: ${JUDGE0_IMAGE:-judge0/judge0:latest}
+    profiles:
+      - judge0
+    command:
+      - ./scripts/workers
+    env_file:
+      - ./judge0.conf
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    depends_on:
+      judge0-db:
+        condition: service_healthy
+      judge0-redis:
+        condition: service_healthy
+    privileged: true
+    networks:
+      - judge0_internal
+    <<: *default-logging
+
+  judge0-db:
+    image: postgres:16-alpine
+    profiles:
+      - judge0
+    env_file:
+      - ./judge0.conf
+    volumes:
+      - judge0_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - judge0_internal
+    <<: *default-logging
+
+  judge0-redis:
+    image: redis:7-alpine
+    profiles:
+      - judge0
+    command:
+      - sh
+      - -c
+      - redis-server --appendonly no --requirepass "$${REDIS_PASSWORD}"
+    env_file:
+      - ./judge0.conf
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli -a "$${REDIS_PASSWORD}" ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - judge0_internal
+    <<: *default-logging
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  minio_data:
+  judge0_postgres_data:
+
+networks:
+  app_internal:
+  judge0_internal:
+    internal: true
+  judge0_ingress:
