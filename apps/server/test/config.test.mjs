@@ -11,9 +11,12 @@ const validEnv = {
   DATABASE_URL: "postgresql://anecites:anecites_dev_password@localhost:5432/anecites",
   REDIS_URL: "redis://localhost:6379",
   RABBITMQ_URL: "amqp://anecites:anecites_dev_password@localhost:5672",
+  JUDGE0_PROVIDER: "self-hosted",
   JUDGE0_BASE_URL: "http://localhost:2358",
   JUDGE0_AUTHN_HEADER: "X-Judge0-Token",
   JUDGE0_AUTHN_TOKEN: "test-judge0-token",
+  JUDGE0_RAPIDAPI_HOST: "",
+  JUDGE0_REQUEST_TIMEOUT_MS: "15000",
   JUDGE0_ALLOWED_LANGUAGE_IDS: "63,71",
   AUTH_JWT_SECRET: "test_auth_secret_minimum_32_characters",
 };
@@ -27,9 +30,12 @@ test("loadServerConfig accepts the required API server environment", () => {
     databaseUrl: validEnv.DATABASE_URL,
     redisUrl: validEnv.REDIS_URL,
     rabbitmqUrl: validEnv.RABBITMQ_URL,
+    judge0Provider: "self-hosted",
     judge0BaseUrl: validEnv.JUDGE0_BASE_URL,
     judge0AuthHeader: validEnv.JUDGE0_AUTHN_HEADER,
     judge0AuthToken: validEnv.JUDGE0_AUTHN_TOKEN,
+    judge0RapidApiHost: null,
+    judge0RequestTimeoutMs: 15000,
     judge0AllowedLanguageIds: [63, 71],
     authJwtSecret: validEnv.AUTH_JWT_SECRET,
     jsonBodyLimit: "1mb",
@@ -60,6 +66,38 @@ test("loadServerConfig fails closed when no Judge0 languages are allowed", () =>
   );
 });
 
+test("loadServerConfig validates remote Judge0 provider settings", () => {
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        JUDGE0_PROVIDER: "remote",
+        JUDGE0_AUTHN_TOKEN: "",
+      }),
+    /JUDGE0_AUTHN_TOKEN is required/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        JUDGE0_PROVIDER: "remote",
+        JUDGE0_AUTHN_TOKEN: "test-key",
+        JUDGE0_RAPIDAPI_HOST: "",
+      }),
+    /JUDGE0_RAPIDAPI_HOST is required/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        JUDGE0_PROVIDER: "invalid",
+      }),
+    /JUDGE0_PROVIDER must be/,
+  );
+});
+
 test("loadServerConfig rejects unsafe Judge0 execution limits", () => {
   assert.throws(
     () => loadServerConfig({ ...validEnv, CODE_EXECUTION_CPU_TIME_LIMIT_SECONDS: "0" }),
@@ -79,6 +117,11 @@ test("loadServerConfig rejects unsafe Judge0 execution limits", () => {
   assert.throws(
     () => loadServerConfig({ ...validEnv, CODE_EXECUTION_STACK_LIMIT_KB: "128001" }),
     /CODE_EXECUTION_STACK_LIMIT_KB must be less than or equal to 128000/,
+  );
+
+  assert.throws(
+    () => loadServerConfig({ ...validEnv, JUDGE0_REQUEST_TIMEOUT_MS: "60001" }),
+    /JUDGE0_REQUEST_TIMEOUT_MS must be less than or equal to 60000/,
   );
 });
 

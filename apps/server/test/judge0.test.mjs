@@ -16,9 +16,12 @@ function testConfig(overrides = {}) {
     DATABASE_URL: "postgresql://anecites:anecites_dev_password@localhost:5432/anecites",
     REDIS_URL: "redis://localhost:6379",
     RABBITMQ_URL: "amqp://anecites:anecites_dev_password@localhost:5672",
+    JUDGE0_PROVIDER: "self-hosted",
     JUDGE0_BASE_URL: "http://judge0.test",
     JUDGE0_AUTHN_HEADER: "X-Judge0-Token",
     JUDGE0_AUTHN_TOKEN: "test-judge0-token",
+    JUDGE0_RAPIDAPI_HOST: "",
+    JUDGE0_REQUEST_TIMEOUT_MS: "15000",
     JUDGE0_ALLOWED_LANGUAGE_IDS: "63,71",
     AUTH_JWT_SECRET: authJwtSecret,
     ...overrides,
@@ -163,6 +166,83 @@ test("POST /code-executions submits allowed code to Judge0 with enforced limits"
     max_file_size: 64,
     number_of_runs: 1,
   });
+});
+
+test("POST /code-executions sends RapidAPI headers for remote Judge0", async (t) => {
+  const fakeJudge0 = createFakeJudge0Fetch({
+    token: "submission-token",
+    stdout: "ok\n",
+    stderr: null,
+    compile_output: null,
+    message: null,
+    time: "0.012",
+    memory: 1024,
+    status: {
+      id: 3,
+      description: "Accepted",
+    },
+  });
+  const app = createApp(testConfig({
+    JUDGE0_PROVIDER: "remote",
+    JUDGE0_RAPIDAPI_HOST: "judge0-ce.p.rapidapi.com",
+    JUDGE0_AUTHN_HEADER: "X-RapidAPI-Key",
+    JUDGE0_AUTHN_TOKEN: "test-rapid-key",
+  }), {
+    logger: quietLogger(),
+    fetch: fakeJudge0.fetchImpl,
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const result = await jsonRequest(server, "/code-executions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      languageId: 63,
+      sourceCode: "console.log('ok')",
+    }),
+  });
+
+  assert.equal(result.response.status, 201);
+  assert.equal(fakeJudge0.calls.length, 1);
+  assert.equal(fakeJudge0.calls[0].headers.get("X-RapidAPI-Key"), "test-rapid-key");
+  assert.equal(fakeJudge0.calls[0].headers.get("X-RapidAPI-Host"), "judge0-ce.p.rapidapi.com");
+});
+
+test("POST /code-executions does not send RapidAPI host for self-hosted Judge0", async (t) => {
+  const fakeJudge0 = createFakeJudge0Fetch({
+    token: "submission-token",
+    stdout: "ok\n",
+    stderr: null,
+    compile_output: null,
+    message: null,
+    time: "0.012",
+    memory: 1024,
+    status: {
+      id: 3,
+      description: "Accepted",
+    },
+  });
+  const app = createApp(testConfig(), {
+    logger: quietLogger(),
+    fetch: fakeJudge0.fetchImpl,
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const result = await jsonRequest(server, "/code-executions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      languageId: 63,
+      sourceCode: "console.log('ok')",
+    }),
+  });
+
+  assert.equal(result.response.status, 201);
+  assert.equal(fakeJudge0.calls.length, 1);
+  assert.equal(fakeJudge0.calls[0].headers.get("X-Judge0-Token"), "test-judge0-token");
+  assert.equal(fakeJudge0.calls[0].headers.get("X-RapidAPI-Host"), null);
 });
 
 test("POST /code-executions rejects unauthenticated requests before Judge0 is called", async (t) => {

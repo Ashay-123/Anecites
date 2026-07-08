@@ -1,12 +1,23 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { SignJWT } from "jose";
 
 import { createApp, loadServerConfig } from "../dist/index.js";
 
+loadDotEnv(resolve(process.cwd(), ".env"));
+
 const smokeOutput = "judge0-smoke-ok";
 const authJwtSecret = process.env.AUTH_JWT_SECRET ?? "local_smoke_auth_secret_minimum_32_characters";
-const judge0BaseUrl = (process.env.JUDGE0_BASE_URL ?? "http://localhost:2358").replace(/\/$/, "");
-const judge0AuthHeader = process.env.JUDGE0_AUTHN_HEADER ?? "X-Judge0-Token";
-const judge0AuthToken = process.env.JUDGE0_AUTHN_TOKEN ?? "local_judge0_dev_token_change_me";
+const judge0Provider = process.env.JUDGE0_PROVIDER ?? "self-hosted";
+const judge0BaseUrl = (
+  process.env.JUDGE0_BASE_URL ?? (judge0Provider === "remote" ? "https://judge0-ce.p.rapidapi.com" : "http://localhost:2358")
+).replace(/\/$/, "");
+const judge0AuthHeader = process.env.JUDGE0_AUTHN_HEADER ?? (judge0Provider === "remote" ? "X-RapidAPI-Key" : "X-Judge0-Token");
+const judge0AuthToken =
+  process.env.JUDGE0_AUTHN_TOKEN ?? (judge0Provider === "remote" ? "" : "local_judge0_dev_token_change_me");
+const judge0RapidApiHost = process.env.JUDGE0_RAPIDAPI_HOST ?? "";
+const judge0RequestTimeoutMs = process.env.JUDGE0_REQUEST_TIMEOUT_MS ?? "15000";
 
 await main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
@@ -24,9 +35,12 @@ async function main() {
       process.env.DATABASE_URL ?? "postgresql://anecites:anecites_dev_password@localhost:5432/anecites",
     REDIS_URL: process.env.REDIS_URL ?? "redis://localhost:6379",
     RABBITMQ_URL: process.env.RABBITMQ_URL ?? "amqp://anecites:anecites_dev_password@localhost:5672",
+    JUDGE0_PROVIDER: judge0Provider,
     JUDGE0_BASE_URL: judge0BaseUrl,
     JUDGE0_AUTHN_HEADER: judge0AuthHeader,
     JUDGE0_AUTHN_TOKEN: judge0AuthToken,
+    JUDGE0_RAPIDAPI_HOST: judge0RapidApiHost,
+    JUDGE0_REQUEST_TIMEOUT_MS: judge0RequestTimeoutMs,
     JUDGE0_ALLOWED_LANGUAGE_IDS: String(smokeLanguage.id),
     AUTH_JWT_SECRET: authJwtSecret,
   });
@@ -98,9 +112,10 @@ async function resolveSmokeLanguage() {
   try {
     response = await fetch(`${judge0BaseUrl}/languages`, {
       headers: judge0Headers(),
+      signal: AbortSignal.timeout(Number(judge0RequestTimeoutMs)),
     });
   } catch (error) {
-    throw new Error(`Could not reach Judge0 at ${judge0BaseUrl}. Start the judge0 Docker profile before running this smoke test.`, {
+    throw new Error(`Could not reach Judge0 at ${judge0BaseUrl}. Verify JUDGE0_BASE_URL and credentials in your .env file.`, {
       cause: error,
     });
   }
@@ -144,13 +159,17 @@ async function resolveSmokeLanguage() {
 }
 
 function judge0Headers() {
-  if (!judge0AuthToken) {
-    return {};
+  const headers = {};
+
+  if (judge0AuthHeader && judge0AuthToken) {
+    headers[judge0AuthHeader] = judge0AuthToken;
   }
 
-  return {
-    [judge0AuthHeader]: judge0AuthToken,
-  };
+  if (judge0RapidApiHost) {
+    headers["X-RapidAPI-Host"] = judge0RapidApiHost;
+  }
+
+  return headers;
 }
 
 function isLanguage(value) {
@@ -168,4 +187,25 @@ function listen(app) {
     server.once("error", reject);
     server.once("listening", () => resolve(server));
   });
+}
+
+function loadDotEnv(path) {
+  if (!existsSync(path)) {
+    return;
+  }
+
+  for (const rawLine of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || !line.includes("=")) {
+      continue;
+    }
+
+    const separatorIndex = line.indexOf("=");
+    const key = line.slice(0, separatorIndex).trim();
+    const value = line.slice(separatorIndex + 1).trim().replace(/^(['"])(.*)\1$/, "$2");
+
+    if (key && process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
 }

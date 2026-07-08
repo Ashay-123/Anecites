@@ -1,4 +1,5 @@
 export type NodeEnv = "development" | "test" | "production";
+export type Judge0Provider = "self-hosted" | "remote";
 
 export interface ServerConfig {
   nodeEnv: NodeEnv;
@@ -8,9 +9,12 @@ export interface ServerConfig {
   databaseUrl: string;
   redisUrl: string;
   rabbitmqUrl: string;
+  judge0Provider: Judge0Provider;
   judge0BaseUrl: string;
   judge0AuthHeader: string | null;
   judge0AuthToken: string | null;
+  judge0RapidApiHost: string | null;
+  judge0RequestTimeoutMs: number;
   judge0AllowedLanguageIds: readonly number[];
   authJwtSecret: string;
   jsonBodyLimit: string;
@@ -26,12 +30,17 @@ export interface ServerConfig {
 type EnvironmentInput = Record<string, string | undefined>;
 
 const NODE_ENVS = new Set(["development", "test", "production"]);
+const JUDGE0_PROVIDERS = new Set(["self-hosted", "remote"]);
 const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 export function loadServerConfig(env: EnvironmentInput = process.env): ServerConfig {
   const nodeEnv = parseNodeEnv(env.NODE_ENV);
+  const judge0Provider = parseJudge0Provider(env.JUDGE0_PROVIDER);
   const judge0AuthToken = parseOptionalString(env.JUDGE0_AUTHN_TOKEN);
-  const judge0AuthHeader = parseOptionalHeaderName(env.JUDGE0_AUTHN_HEADER) ?? (judge0AuthToken ? "X-Judge0-Token" : null);
+  const judge0AuthHeader =
+    parseOptionalHeaderName(env.JUDGE0_AUTHN_HEADER) ?? (judge0AuthToken ? defaultJudge0AuthHeader(judge0Provider) : null);
+  const judge0RapidApiHost = parseOptionalString(env.JUDGE0_RAPIDAPI_HOST);
+  const judge0RequestTimeoutMs = parsePositiveInteger("JUDGE0_REQUEST_TIMEOUT_MS", env.JUDGE0_REQUEST_TIMEOUT_MS, 15_000, 60_000);
   const codeExecutionCpuTimeLimitSeconds = parsePositiveNumber(
     "CODE_EXECUTION_CPU_TIME_LIMIT_SECONDS",
     env.CODE_EXECUTION_CPU_TIME_LIMIT_SECONDS,
@@ -51,6 +60,14 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
     );
   }
 
+  if (judge0Provider === "remote" && !judge0AuthToken) {
+    throw new Error("JUDGE0_AUTHN_TOKEN is required when JUDGE0_PROVIDER is remote");
+  }
+
+  if (judge0Provider === "remote" && !judge0RapidApiHost) {
+    throw new Error("JUDGE0_RAPIDAPI_HOST is required when JUDGE0_PROVIDER is remote");
+  }
+
   return {
     nodeEnv,
     apiHost: env.API_HOST?.trim() || "0.0.0.0",
@@ -59,9 +76,12 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
     databaseUrl: parseRequiredUrl("DATABASE_URL", env.DATABASE_URL),
     redisUrl: parseRequiredUrl("REDIS_URL", env.REDIS_URL),
     rabbitmqUrl: parseRequiredUrl("RABBITMQ_URL", env.RABBITMQ_URL),
+    judge0Provider,
     judge0BaseUrl: parseRequiredUrl("JUDGE0_BASE_URL", env.JUDGE0_BASE_URL),
     judge0AuthHeader,
     judge0AuthToken,
+    judge0RapidApiHost,
+    judge0RequestTimeoutMs,
     judge0AllowedLanguageIds: parseRequiredPositiveIntegerList(
       "JUDGE0_ALLOWED_LANGUAGE_IDS",
       env.JUDGE0_ALLOWED_LANGUAGE_IDS,
@@ -94,6 +114,18 @@ function parseNodeEnv(value: string | undefined): NodeEnv {
     throw new Error("NODE_ENV must be one of development, test, or production");
   }
   return nodeEnv as NodeEnv;
+}
+
+function parseJudge0Provider(value: string | undefined): Judge0Provider {
+  const provider = value?.trim() || "self-hosted";
+  if (!JUDGE0_PROVIDERS.has(provider)) {
+    throw new Error("JUDGE0_PROVIDER must be one of: self-hosted, remote");
+  }
+  return provider as Judge0Provider;
+}
+
+function defaultJudge0AuthHeader(provider: Judge0Provider): string {
+  return provider === "remote" ? "X-RapidAPI-Key" : "X-Judge0-Token";
 }
 
 function parsePort(value: string): number {

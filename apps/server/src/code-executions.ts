@@ -101,15 +101,27 @@ async function submitToJudge0(
     headers[config.judge0AuthHeader] = config.judge0AuthToken;
   }
 
+  if (config.judge0Provider === "remote" && config.judge0RapidApiHost) {
+    headers["X-RapidAPI-Host"] = config.judge0RapidApiHost;
+  }
+
   let judge0Response: Response;
   try {
     judge0Response = await fetchImpl(url, {
       method: "POST",
       headers,
       body: JSON.stringify(createJudge0SubmissionPayload(config, submission)),
+      signal: AbortSignal.timeout(config.judge0RequestTimeoutMs),
     });
-  } catch {
-    throw new HttpError(502, "JUDGE0_UPSTREAM_ERROR", "Code execution service failed");
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === "TimeoutError" || error.name === "AbortError")
+    ) {
+      throw new HttpError(504, "JUDGE0_TIMEOUT", "Code execution timed out");
+    }
+
+    throw new HttpError(502, "JUDGE0_UPSTREAM_ERROR", "Code execution service unreachable");
   }
 
   let responseBody: unknown;
