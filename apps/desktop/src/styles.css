@@ -1,0 +1,217 @@
+:root {
+  color: #e5e7eb;
+  background: #111318;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 16px;
+  letter-spacing: 0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background: #111318;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  min-height: 100vh;
+  background: #111318;
+}
+
+.session-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 24px;
+  border-right: 1px solid #2f3542;
+  background: #171a21;
+}
+
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-mark {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 1px solid #4b5563;
+  background: #20242e;
+  color: #f8fafc;
+  font-weight: 700;
+}
+
+.brand-lockup h1,
+.workspace-grid h2 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.brand-lockup p,
+.workspace-grid header span,
+.connection-state span,
+dt {
+  margin: 0;
+  color: #9ca3af;
+  font-size: 0.8125rem;
+}
+
+.join-form {
+  display: grid;
+  gap: 8px;
+}
+
+.join-form label {
+  display: grid;
+  gap: 6px;
+  color: #cbd5e1;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.join-form input {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid #3f4654;
+  border-radius: 4px;
+  background: #0f1117;
+  color: #f8fafc;
+  padding: 8px 10px;
+}
+
+.join-form input[aria-invalid="true"] {
+  border-color: #ef4444;
+}
+
+.field-error {
+  margin: -2px 0 4px;
+  color: #fca5a5;
+  font-size: 0.75rem;
+}
+
+.join-form button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 4px;
+  background: #2f7d68;
+  color: #f8fafc;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.connection-state {
+  display: flex;
+  justify-content: space-between;
+  border-top: 1px solid #2f3542;
+  padding-top: 16px;
+}
+
+.connection-state strong {
+  color: #f8fafc;
+  font-size: 0.875rem;
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  min-width: 0;
+}
+
+.editor-pane,
+.output-pane {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.editor-pane {
+  border-right: 1px solid #2f3542;
+}
+
+.workspace-grid header {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #2f3542;
+  padding: 0 18px;
+  background: #171a21;
+}
+
+.editor-host {
+  min-height: 0;
+  flex: 1;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      #0f1117 0,
+      #0f1117 27px,
+      #151922 28px
+    );
+}
+
+.output-pane pre {
+  flex: 1;
+  margin: 0;
+  padding: 18px;
+  overflow: auto;
+  color: #d1d5db;
+  background: #0f1117;
+}
+
+.output-pane dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  border-top: 1px solid #2f3542;
+  background: #2f3542;
+}
+
+.output-pane dl div {
+  display: grid;
+  gap: 4px;
+  padding: 12px 18px;
+  background: #171a21;
+}
+
+dd {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 0.875rem;
+}
+
+@media (max-width: 860px) {
+  .app-shell,
+  .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .session-panel,
+  .editor-pane {
+    border-right: 0;
+    border-bottom: 1px solid #2f3542;
+  }
+
+  .editor-host {
+    min-height: 360px;
+  }
+}

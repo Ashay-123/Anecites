@@ -520,29 +520,74 @@ Working rule: every implementation task must start by defining the verification 
 
 ### T-05.01 Create `apps/desktop`
 
-- [ ] Scaffold Tauri v2 + React + Vite + TypeScript.
-- [ ] Add dark, utilitarian interview UI.
-- [ ] Add split pane for editor and output.
-- [ ] Add session join flow.
+- [x] Scaffold Tauri v2 + React + Vite + TypeScript.
+- [x] Add dark, utilitarian interview UI.
+- [x] Add split pane for editor and output.
+- [x] Add session join flow.
 - Test first:
-  - [ ] Add UI smoke test.
-  - [ ] Add session join validation test.
+  - [x] Add UI smoke test.
+  - [x] Add session join validation test.
 - Done when:
-  - [ ] Desktop app can join a session and connect to the collab server.
+  - [~] Desktop app can join a session and connect to the collab server.
+    - Current shell validates join input and renders the editor/output workspace.
+    - Runtime collab connection wiring is pending because this task only adds the first desktop shell.
+    - Native Tauri build verification is blocked until Rust and Cargo are installed.
+
+### Phase 5 Desktop Shell Verification Log
+
+- [x] Verified npm package versions before installation:
+  - [x] `vite@8.1.4`
+  - [x] `@vitejs/plugin-react@6.0.3`
+  - [x] `@tauri-apps/api@2.11.1`
+  - [x] `@tauri-apps/cli@2.11.4`
+- [x] Observed expected failing desktop test before implementation: `npm run test --workspace @anecites/desktop`
+- [x] `npm install`
+- [x] `npm run test --workspace @anecites/desktop` (`3` tests, `3` passed, `0` failed)
+- [x] `npm run tauri --workspace @anecites/desktop -- info`
+  - Tauri recognized the React/Vite app and config.
+  - Initial run reported missing Rust tooling until the current process PATH was updated to include `C:\Users\sansk\.cargo\bin`.
+- [x] `npm audit --audit-level=moderate`
+- [x] `npm run lint`
+- [x] `npm run typecheck`
+- [x] `npm run build`
+- [x] `npm run test` (`78` tests, `78` passed, `0` failed)
+- [x] `npm run verify`
+- [x] `git diff --check`
 
 ### T-05.02 Add Rust backend skeleton
 
-- [ ] Add Tauri command modules.
-- [ ] Add process scanner module boundary.
-- [ ] Add window monitor module boundary.
-- [ ] Add capture-affinity checker boundary.
-- [ ] Add VM detection boundary.
+- [x] Add Tauri command modules.
+- [x] Add process scanner module boundary.
+- [x] Add window monitor module boundary.
+- [x] Add capture-affinity checker boundary.
+- [x] Add VM detection boundary.
 - Test first:
-  - [ ] Add Rust unit tests for command input validation.
-  - [ ] Add platform guard tests for Windows-only code paths.
+  - [x] Add Rust unit tests for command input validation.
+  - [x] Add platform guard tests for Windows-only code paths.
 - Done when:
-  - [ ] Native commands return typed, testable results.
-  - [ ] Unsupported platforms fail clearly.
+  - [x] Native commands return typed, testable results.
+  - [x] Unsupported platforms fail clearly.
+  - Current scanner modules are boundaries only; real Windows process/window/capture-affinity enumeration remains future work.
+
+### Phase 5 Rust Backend Verification Log
+
+- [x] Confirmed Rust toolchain through `C:\Users\sansk\.cargo\bin`:
+  - [x] `rustc 1.97.0`
+  - [x] `cargo 1.97.0`
+  - [x] `stable-x86_64-pc-windows-msvc`
+- [x] Observed expected failing Rust test before implementation: `cargo test --manifest-path apps\desktop\src-tauri\Cargo.toml`
+- [x] Added generated `apps/desktop/src-tauri/icons/icon.ico` because Tauri requires `icons/icon.ico` for Windows resource generation.
+- [x] `cargo fmt --manifest-path apps\desktop\src-tauri\Cargo.toml -- --check`
+- [x] `npm run test:rust --workspace @anecites/desktop` (`4` Rust tests, `4` passed, `0` failed)
+- [x] `npm run tauri --workspace @anecites/desktop -- info`
+  - Tauri now detects WebView2, MSVC, Rust, Cargo, rustup, and the stable MSVC Rust toolchain.
+- [x] `npm audit --audit-level=moderate`
+- [x] `npm run lint`
+- [x] `npm run typecheck`
+- [x] `npm run build`
+- [x] `npm run test` (`78` Node tests and `4` Rust tests, all passed)
+- [x] `npm run verify`
+- [x] `git diff --check`
 
 ## Phase 6 - Module 1 Test Gate
 

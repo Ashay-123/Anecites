@@ -1,0 +1,32 @@
+{
+  "name": "@anecites/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:deps": "npm run build --workspace @anecites/editor-core",
+    "build:web": "npm run build:deps && tsc -p tsconfig.json && vite build",
+    "build": "npm run build:web",
+    "typecheck": "npm run build:deps && tsc -p tsconfig.json --noEmit",
+    "lint": "npm run typecheck && npm run lint:rust",
+    "lint:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
+    "test": "npm run build && node --test --test-isolation=none test/*.test.mjs && npm run test:rust",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "dev": "vite --host 127.0.0.1",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@anecites/editor-core": "0.0.0",
+    "@tauri-apps/api": "2.11.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@types/node": "24.13.2",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "vite": "8.1.4"
+  }
+}

@@ -1,0 +1,12 @@
+[package]
+name = "anecites-desktop"
+version = "0.0.0"
+description = "Anecites desktop interview client"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
