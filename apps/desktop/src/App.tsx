@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   MonacoCollabEditor,
   createEditorYjsDocument,
@@ -12,6 +12,17 @@ import {
   type JoinSessionInput,
   type NormalizedJoinSessionInput,
 } from "./session.js";
+import {
+  connectLiveKitRoom,
+  createLiveKitRoom,
+  observeLiveKitRoomEvents,
+  requestLiveKitToken,
+  runDisplayMediaSelfCheck,
+  setLiveKitScreenShare,
+  type LiveKitConnectionStatus,
+  type LiveKitMediaMode,
+  type ConnectableLiveKitRoom,
+} from "./livekit.js";
 
 const defaultJoinInput: JoinSessionInput = {
   apiBaseUrl: "http://127.0.0.1:3000",
@@ -37,6 +48,9 @@ const emptyExecution: CodeExecutionResult = {
   memoryKb: null,
 };
 
+type VideoStatus = "idle" | "connecting" | LiveKitConnectionStatus | "error";
+type ScreenShareStatus = "idle" | "checking" | "ready" | "sharing" | "error";
+
 export function App(): React.ReactElement {
   const document = useMemo(
     () =>
@@ -50,6 +64,21 @@ export function App(): React.ReactElement {
   const [joinErrors, setJoinErrors] = useState<JoinSessionErrors>({});
   const [session, setSession] = useState<NormalizedJoinSessionInput | null>(null);
   const [execution] = useState<CodeExecutionResult>(emptyExecution);
+  const [videoStatus, setVideoStatus] = useState<VideoStatus>("idle");
+  const [videoError, setVideoError] = useState<string | null>(null);
+  const [mediaMode, setMediaMode] = useState<LiveKitMediaMode>("normal");
+  const [screenShareStatus, setScreenShareStatus] = useState<ScreenShareStatus>("idle");
+  const [screenShareError, setScreenShareError] = useState<string | null>(null);
+  const livekitRoomRef = useRef<ConnectableLiveKitRoom | null>(null);
+  const livekitRoomCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(
+    () => () => {
+      livekitRoomCleanupRef.current?.();
+      void livekitRoomRef.current?.disconnect?.();
+    },
+    [],
+  );
 
   function updateJoinInput(field: keyof JoinSessionInput, value: string): void {
     setJoinInput((current) => ({
@@ -70,6 +99,106 @@ export function App(): React.ReactElement {
 
     setJoinErrors({});
     setSession(normalizeJoinSessionInput(joinInput));
+    setVideoStatus("idle");
+    setVideoError(null);
+    setMediaMode("normal");
+    setScreenShareStatus("idle");
+    setScreenShareError(null);
+  }
+
+  async function connectVideo(): Promise<void> {
+    if (!session) {
+      setVideoStatus("error");
+      setVideoError("Join a session before connecting video");
+      return;
+    }
+
+    try {
+      setVideoStatus("connecting");
+      setVideoError(null);
+      const details = await requestLiveKitToken({
+        apiBaseUrl: session.apiBaseUrl,
+        authToken: session.authToken,
+        sessionId: session.sessionId,
+        participantId: session.participantId,
+      });
+      const room = await createLiveKitRoom();
+      livekitRoomRef.current = await connectLiveKitRoom(room, details);
+      livekitRoomCleanupRef.current?.();
+      livekitRoomCleanupRef.current = observeLiveKitRoomEvents(room, {
+        onConnectionStatus(status) {
+          setVideoStatus(status);
+        },
+        onMediaMode(mode) {
+          setMediaMode(mode);
+        },
+      });
+      setVideoStatus("connected");
+      setMediaMode("normal");
+      setScreenShareStatus("idle");
+    } catch (error) {
+      livekitRoomCleanupRef.current?.();
+      livekitRoomCleanupRef.current = null;
+      livekitRoomRef.current = null;
+      setVideoStatus("error");
+      setVideoError(error instanceof Error ? error.message : "Video connection failed");
+    }
+  }
+
+  async function disconnectVideo(): Promise<void> {
+    livekitRoomCleanupRef.current?.();
+    livekitRoomCleanupRef.current = null;
+    await livekitRoomRef.current?.disconnect?.();
+    livekitRoomRef.current = null;
+    setVideoStatus("idle");
+    setVideoError(null);
+    setMediaMode("normal");
+    setScreenShareStatus("idle");
+    setScreenShareError(null);
+  }
+
+  async function checkScreenShare(): Promise<void> {
+    try {
+      setScreenShareStatus("checking");
+      setScreenShareError(null);
+      await runDisplayMediaSelfCheck();
+      setScreenShareStatus("ready");
+    } catch (error) {
+      setScreenShareStatus("error");
+      setScreenShareError(error instanceof Error ? error.message : "Screen share self-check failed");
+    }
+  }
+
+  async function startScreenShare(): Promise<void> {
+    if (!livekitRoomRef.current) {
+      setScreenShareStatus("error");
+      setScreenShareError("Connect video before sharing screen");
+      return;
+    }
+
+    try {
+      setScreenShareError(null);
+      await setLiveKitScreenShare(livekitRoomRef.current, true);
+      setScreenShareStatus("sharing");
+    } catch (error) {
+      setScreenShareStatus("error");
+      setScreenShareError(error instanceof Error ? error.message : "Screen share failed");
+    }
+  }
+
+  async function stopScreenShare(): Promise<void> {
+    if (!livekitRoomRef.current) {
+      return;
+    }
+
+    try {
+      await setLiveKitScreenShare(livekitRoomRef.current, false);
+      setScreenShareStatus("ready");
+      setScreenShareError(null);
+    } catch (error) {
+      setScreenShareStatus("error");
+      setScreenShareError(error instanceof Error ? error.message : "Stopping screen share failed");
+    }
   }
 
   return (
@@ -174,22 +303,65 @@ export function App(): React.ReactElement {
           />
         </section>
 
-        <section className="output-pane" aria-label="Output">
-          <header>
-            <h2>Output</h2>
-            <span>{execution.status.description}</span>
-          </header>
-          <pre>{execution.stdout ?? execution.stderr ?? execution.message ?? ""}</pre>
-          <dl>
-            <div>
-              <dt>Time</dt>
-              <dd>{execution.timeSeconds ?? "-"}</dd>
+        <section className="side-stack">
+          <section className="video-pane" aria-label="Video call">
+            <header>
+              <h2>Video call</h2>
+              <span>{videoStatus}</span>
+            </header>
+            <div className="video-stage" data-anecites-video={videoStatus}>
+              <span>
+                {videoStatus === "connected" || videoStatus === "reconnecting"
+                  ? `LiveKit ${videoStatus} · ${mediaMode} · screen ${screenShareStatus}`
+                  : "No active call"}
+              </span>
             </div>
-            <div>
-              <dt>Memory</dt>
-              <dd>{execution.memoryKb ?? "-"}</dd>
+            <div className="video-actions">
+              <button
+                type="button"
+                onClick={() => void connectVideo()}
+                disabled={videoStatus === "connecting" || videoStatus === "connected" || videoStatus === "reconnecting"}
+              >
+                Connect video
+              </button>
+              <button type="button" onClick={() => void disconnectVideo()} disabled={videoStatus !== "connected"}>
+                Disconnect
+              </button>
+              <button type="button" onClick={() => void checkScreenShare()} disabled={screenShareStatus === "checking"}>
+                Check screen
+              </button>
+              <button
+                type="button"
+                onClick={() => void startScreenShare()}
+                disabled={videoStatus !== "connected" || screenShareStatus === "sharing"}
+              >
+                Share screen
+              </button>
+              <button type="button" onClick={() => void stopScreenShare()} disabled={screenShareStatus !== "sharing"}>
+                Stop share
+              </button>
             </div>
-          </dl>
+            {videoError ? <p className="video-error">{videoError}</p> : null}
+            {screenShareError ? <p className="video-error">{screenShareError}</p> : null}
+          </section>
+
+          <section className="output-pane" aria-label="Output">
+            <header>
+              <h2>Output</h2>
+              <span>{execution.status.description}</span>
+            </header>
+            <pre>{execution.stdout ?? execution.stderr ?? execution.message ?? ""}</pre>
+            <dl>
+              <div>
+                <dt>Time</dt>
+                <dd>{execution.timeSeconds ?? "-"}</dd>
+              </div>
+              <div>
+                <dt>Memory</dt>
+                <dd>{execution.memoryKb ?? "-"}</dd>
+              </div>
+            </dl>
+          </section>
         </section>
       </section>
     </main>

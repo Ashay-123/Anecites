@@ -1,0 +1,7 @@
+api_key: devkey
+api_secret: devsecret_livekit_local_minimum_32_chars
+ws_url: ws://livekit:7880
+insecure: true
+
+redis:
+  address: livekit-redis:6379

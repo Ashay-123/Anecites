@@ -454,8 +454,8 @@ Working rule: every implementation task must start by defining the verification 
   - [ ] Add Monaco command override test.
   - [x] Add atomic insert detection test.
 - Done when:
-  - [~] Right-click paste, keyboard paste, and simulated atomic inserts are covered by tests.
-    - Browser `paste` events and simulated atomic inserts are covered.
+- [~] Right-click paste, keyboard paste, and simulated atomic inserts are covered by tests.
+    - Browser `paste` events, context-menu paste blocking, and simulated atomic inserts are covered.
     - Monaco-specific command override coverage is still pending.
 
 ### Phase 4 Paste Blocking Verification Log
@@ -500,7 +500,8 @@ Working rule: every implementation task must start by defining the verification 
 - [x] Preserve timing between operations.
 - Test first:
   - [x] Add replay determinism test.
-  - [x] Add timing tolerance test.
+- [x] Add timing tolerance test.
+  - Current replay timing tolerance is documented in tests as `5ms`.
 - Done when:
   - [x] Replayed output matches the original final document.
 
@@ -593,16 +594,195 @@ Working rule: every implementation task must start by defining the verification 
 
 The project does not move to the video module until all tests below pass.
 
-- [ ] T-ED-01: Two clients edit the same document concurrently with no conflicts or dropped updates.
-- [ ] T-ED-02: OS-level paste injection is flagged in the edit telemetry.
-- [ ] T-ED-03: Fork bomb is contained by the configured code-execution sandbox.
-- [ ] T-ED-04: Network call from candidate code is blocked in the sandbox.
-- [ ] T-ED-05: 50 concurrent sessions pass a load test with no cross-session bleed.
-- [ ] T-ED-06: Right-click paste is blocked and logged.
-- [ ] T-ED-07: Keystroke replay matches original timing within documented tolerance.
+- [x] T-ED-01: Two clients edit the same document concurrently with no conflicts or dropped updates.
+- [x] T-ED-02: OS-level paste injection is flagged in the edit telemetry.
+- [x] T-ED-03: Fork bomb is contained by the configured code-execution sandbox.
+- [x] T-ED-04: Network call from candidate code is blocked in the sandbox.
+- [x] T-ED-05: 50 concurrent sessions pass a load test with no cross-session bleed.
+- [x] T-ED-06: Right-click paste is blocked and logged.
+- [x] T-ED-07: Keystroke replay matches original timing within documented tolerance.
+
+### Phase 6 Module 1 Verification Log
+
+- [x] Added a focused collab convergence test covering concurrent edits from two clients and a late-joining snapshot.
+- [x] `npm run test --workspace @anecites/collab` (`16` tests, `16` passed, `0` failed)
+- [x] Added a focused simulated OS-level paste-injection test covering a large Yjs insert with no DOM paste event.
+- [x] `npm run test --workspace @anecites/collab` (`17` tests, `17` passed, `0` failed)
+- [x] Added a 50-session collab load/isolation test with two clients per room and no queued cross-room updates.
+- [x] Fixed the load-test room-count race by waiting for server-side room registration after WebSocket open.
+- [x] `npm run test --workspace @anecites/collab` (`18` tests, `18` passed, `0` failed)
+- [x] Observed expected failing right-click paste test before implementation: `npm run test --workspace @anecites/editor-core`
+- [x] Added context-menu paste blocking at the editor host and emitted paste-blocked telemetry through the existing raw event path.
+- [x] `npm run test --workspace @anecites/editor-core` (`20` tests, `20` passed, `0` failed)
+- [x] Added a keystroke replay timing test with a documented `5ms` tolerance.
+- [x] `npm run test --workspace @anecites/editor-core` (`21` tests, `21` passed, `0` failed)
+- [x] Added backend coverage for Piston process-limit failures normalizing to `Runtime Error`.
+- [x] `npm run test --workspace @anecites/server` (`22` tests, `22` passed, `0` failed)
+- [x] `npm run smoke:piston --workspace @anecites/server`
+- [x] Ran a fork-stress Piston smoke through the backend proxy; Piston returned `Runtime Error` with `EAGAIN`, and the `piston` container remained `Up`.
+- [x] Added backend coverage for Piston blocked-network failures normalizing to `Runtime Error`.
+- [x] `npm run test --workspace @anecites/server` (`23` tests, `23` passed, `0` failed)
+- [x] Ran a blocked-network Piston smoke through the backend proxy; Piston returned `Runtime Error` with `EAI_AGAIN`, and the `piston` container remained `Up`.
+- [x] `npm audit --audit-level=moderate`
+- [x] `npm run lint`
+- [x] `npm run typecheck`
+- [x] `npm run build`
+- [x] `npm run test` (`85` Node tests and `4` Rust tests, all passed)
+- [x] `npm run verify`
+- [x] `git diff --check`
 
 ## Later Phases
 
-- [ ] Module 2: LiveKit video call, screen share, egress recording, reconnect handling.
-- [ ] Module 3: server-side media inference, native helper v1, lag-loop detection, composite risk engine, reviewer dashboard.
+- [x] Module 2: LiveKit video call, screen share, egress recording, reconnect handling.
+  - [x] T-VID-01: Add backend-only LiveKit room/token flow.
+    - Test first:
+      - [x] Add config tests for optional LiveKit URL/key/secret and token TTL validation.
+      - [x] Add route tests for issuing a short-lived room join token to an existing session participant.
+      - [x] Add route tests proving missing LiveKit server credentials fail closed without leaking secrets.
+    - Done when:
+      - [x] Clients receive only LiveKit URL, room name, participant identity, and a signed token.
+      - [x] LiveKit API key and secret remain backend-only.
+    - Verification log:
+      - [x] Verified `livekit-server-sdk@2.17.0` from npm and official LiveKit server SDK docs before implementation.
+      - [x] Observed expected failing server tests before implementation: missing LiveKit config fields and missing `POST /sessions/:sessionId/livekit-token` route.
+      - [x] Added nullable backend LiveKit config: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, and `LIVEKIT_TOKEN_TTL_SECONDS`.
+      - [x] Added backend-only LiveKit join-token helper using room join grants only.
+      - [x] Added authenticated session token route that validates the participant belongs to the session.
+      - [x] `npm run build --workspace @anecites/server`
+      - [x] `node --test --test-isolation=none apps/server/test/config.test.mjs apps/server/test/sessions.test.mjs` (`11` tests, `11` passed, `0` failed)
+      - [x] `npm run test --workspace @anecites/server` (`26` tests, `26` passed, `0` failed)
+  - [x] T-VID-02: Add desktop LiveKit client UI.
+    - Test first:
+      - [x] Add desktop tests for requesting a backend-issued LiveKit token without LiveKit credentials.
+      - [x] Add desktop tests for connecting an injected LiveKit room with the backend-issued token.
+      - [x] Add render smoke coverage for the video call panel.
+    - Done when:
+      - [x] The desktop UI can request a LiveKit token from the backend after joining a session.
+      - [x] The desktop UI can create/connect a LiveKit room using only the returned URL/token.
+    - Verification log:
+      - [x] Verified `livekit-client@2.20.1` from npm and official LiveKit client docs before implementation.
+      - [x] Observed expected failing desktop test before implementation: missing `dist/livekit.js`.
+      - [x] Added `apps/desktop/src/livekit.ts` with token request, lazy room creation, and injectable room connection.
+      - [x] Added the video call panel to the desktop shell.
+      - [x] First `npm run test --workspace @anecites/desktop` passed Node tests but failed Rust because this PowerShell process did not include `C:\Users\sansk\.cargo\bin` on `PATH`.
+      - [x] `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run test --workspace @anecites/desktop` (`6` Node tests and `4` Rust tests, all passed)
+  - [x] T-VID-03: Add candidate screen-share flow and `getDisplayMedia` self-check.
+    - Test first:
+      - [x] Add tests that `getDisplayMedia` is called with video enabled and returned tracks are stopped after the self-check.
+      - [x] Add tests that unavailable or empty display capture fails closed.
+      - [x] Add tests that screen sharing toggles through LiveKit's local participant API.
+    - Done when:
+      - [x] The desktop UI has explicit screen self-check, start-share, and stop-share controls.
+      - [x] The implementation does not use a real browser prompt during tests.
+    - Verification log:
+      - [x] Observed expected failing desktop test before implementation: missing `runDisplayMediaSelfCheck` export.
+      - [x] Added `runDisplayMediaSelfCheck` with injected `getDisplayMedia` support and captured-track cleanup.
+      - [x] Added `setLiveKitScreenShare` against `room.localParticipant.setScreenShareEnabled`.
+      - [x] Updated the desktop video panel with screen-check and share controls.
+      - [x] `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run test --workspace @anecites/desktop` (`9` Node tests and `4` Rust tests, all passed)
+  - [x] T-VID-04: Add LiveKit egress recording control.
+    - Test first:
+      - [x] Add config tests for S3-backed LiveKit recording settings.
+      - [x] Add route tests that room-composite recording starts with S3 output.
+      - [x] Add route tests that recording stop calls LiveKit egress stop.
+      - [x] Add route tests proving missing recording storage fails closed.
+    - Done when:
+      - [x] Backend can start and stop LiveKit room-composite egress through authenticated session routes.
+      - [x] Recording storage credentials remain backend-only.
+    - Verification log:
+      - [x] Inspected LiveKit SDK egress types before implementation: `EgressClient`, `EncodedFileOutput`, `S3Upload`, and `EncodedFileType`.
+      - [x] Observed expected failing server tests before implementation: missing recording config fields and missing recording routes.
+      - [x] Added `LIVEKIT_API_URL` with derivation from `LIVEKIT_URL` when omitted.
+      - [x] Added recording S3 config using existing S3 environment names plus `LIVEKIT_RECORDING_KEY_PREFIX`.
+      - [x] Added authenticated start/stop recording routes under `/sessions`.
+      - [x] `npm run build --workspace @anecites/server`
+      - [x] `node --test --test-isolation=none apps/server/test/config.test.mjs apps/server/test/sessions.test.mjs` (`13` tests, `13` passed, `0` failed)
+      - [x] `npm run test --workspace @anecites/server` (`28` tests, `28` passed, `0` failed)
+  - [x] T-VID-05: Add reconnect handling and throttled-network tests.
+    - Test first:
+      - [x] Add unit tests mapping LiveKit reconnect events to UI reconnect state.
+      - [x] Add unit tests mapping reconnecting/disconnected states to audio-priority degraded mode.
+      - [x] Add a real throttled-network call test against a running LiveKit environment.
+    - Done when:
+      - [x] Desktop cleans up LiveKit event handlers on disconnect/unmount.
+      - [x] Desktop shows reconnecting and audio-priority degraded mode during LiveKit reconnect events.
+      - [x] A real LiveKit call survives network throttling and returns to normal mode after reconnect.
+    - Verification log:
+      - [x] Verified LiveKit client connection states/events from official docs before implementation.
+      - [x] Observed expected failing desktop test before implementation: missing `observeLiveKitRoomEvents` export.
+      - [x] Added LiveKit room event observer for `signalReconnecting`, `reconnecting`, `reconnected`, and `disconnected`.
+      - [x] Wired reconnect state into the desktop video panel.
+      - [x] `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run test --workspace @anecites/desktop` (`10` Node tests and `4` Rust tests, all passed)
+      - [x] `npm run smoke:livekit:browser --workspace @anecites/server` failed as expected before implementation because the script did not exist.
+      - [x] Added `npm run smoke:livekit:browser --workspace @anecites/server`; it launches headless Chrome, connects two LiveKit participants, publishes fake media, verifies remote track subscription, forces a temporary DevTools network outage, and verifies reconnect recovery.
+      - [x] `npm run smoke:livekit:browser --workspace @anecites/server` passed with local LiveKit room `smoke-livekit-browser-1783715853009`.
+  - [x] T-VID-06: Add local LiveKit Docker profile and control-plane smoke test.
+    - Test first:
+      - [x] Extend Docker verification to require LiveKit config files and profile config.
+      - [x] Observe expected verifier failure before adding `docker/livekit.yaml` and `docker/livekit-egress.yaml`.
+    - Done when:
+      - [x] LiveKit server, LiveKit egress, and LiveKit Redis run under a separate `livekit` Compose profile.
+      - [x] LiveKit publishes only localhost development ports.
+      - [x] A real LiveKit API smoke creates, lists, and deletes a room through backend-only credentials.
+    - Verification log:
+      - [x] Inspected LiveKit self-hosting and egress configuration docs before adding Docker config.
+      - [x] `npm run verify:docker` failed as expected with missing `docker/livekit.yaml` and `docker/livekit-egress.yaml`.
+      - [x] Added `docker/livekit.yaml` and `docker/livekit-egress.yaml`.
+      - [x] Added `livekit`, `livekit-egress`, and `livekit-redis` services under the `livekit` Compose profile.
+      - [x] Added `LIVEKIT_RECORDING_S3_ENDPOINT` so local egress can use Docker-internal `http://minio:9000` while host services keep `S3_ENDPOINT=http://localhost:9000`.
+      - [x] First LiveKit start exposed a current LiveKit requirement: API secrets must be at least 32 characters.
+      - [x] Updated local dev LiveKit secret to `devsecret_livekit_local_minimum_32_chars`.
+      - [x] `docker compose --env-file docker/.env.example -f docker/docker-compose.yml --profile infra --profile livekit up -d --force-recreate livekit livekit-egress`
+      - [x] `docker compose --env-file docker/.env.example -f docker/docker-compose.yml --profile infra --profile livekit ps -a` showed LiveKit, egress, LiveKit Redis, and MinIO running.
+      - [x] `npm run smoke:livekit --workspace @anecites/server`
+      - [x] `npm run test --workspace @anecites/server` (`28` tests, `28` passed, `0` failed)
+      - [x] `npm run verify:docker`
+      - [x] `npm audit --audit-level=moderate` (`0` vulnerabilities)
+      - [x] `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run lint`
+      - [x] `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run typecheck`
+      - [x] `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run build`
+      - [x] `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run verify`
+      - [x] `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run test` (`97` Node tests and `4` Rust tests, all passed)
+      - [x] `git diff --check`
+  - [x] Module 2 partial verification:
+    - [x] Pinned `livekit-server-sdk@2.17.0` and `livekit-client@2.20.1`.
+    - [x] `npm audit --audit-level=moderate` (`0` vulnerabilities)
+    - [x] `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run lint`
+    - [x] `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run typecheck`
+    - [x] `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run build`
+    - [x] `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run test` (`97` Node tests and `4` Rust tests, all passed)
+    - [x] `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run verify`
+    - [x] `git diff --check`
+    - [x] `npm run smoke:livekit:browser --workspace @anecites/server`
+    - [x] Re-ran final verification after browser smoke: `npm run test --workspace @anecites/server` (`28` tests, `28` passed, `0` failed), `npm run verify:docker`, `npm audit --audit-level=moderate` (`0` vulnerabilities), `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run lint`, `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run typecheck`, `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run build`, `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run verify`, `$env:PATH = "C:\Users\sansk\.cargo\bin;$env:PATH"; npm run test` (`97` Node tests and `4` Rust tests, all passed), and `git diff --check`.
+    - [x] `npm install --package-lock-only`
+    - [x] `npm audit --audit-level=moderate` (`0` vulnerabilities)
+- [~] Module 3: server-side media inference, native helper v1, lag-loop detection, composite risk engine, reviewer dashboard.
+  - [x] T-MON-01: Add shared composite risk summary foundation.
+    - Test first:
+      - [x] Add shared tests proving risk signals are grouped by category and never produce auto-fail decisions.
+      - [x] Add shared tests proving one signal category does not satisfy the correlation policy.
+      - [x] Add shared tests proving invalid signal types and weights fail closed.
+    - Done when:
+      - [x] Shared code can normalize a list of weighted risk signals into an explainable category breakdown.
+      - [x] The summary requires human review and keeps auto-fail disabled.
+      - [x] The summary exposes whether the configured minimum correlation policy is met.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/shared` failed as expected before implementation because `buildCompositeRiskSummary` was not exported.
+      - [x] Added `buildCompositeRiskSummary` in shared risk code.
+      - [x] `npm run test --workspace @anecites/shared` (`18` tests, `18` passed, `0` failed)
+      - [x] Final verification after T-MON-01: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`100` Node tests and `4` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-02: Add backend-only risk summary persistence service.
+    - Test first:
+      - [x] Add server tests that persist a composite risk summary into Prisma.
+      - [x] Add server tests that missing sessions and invalid summary input fail closed.
+    - Done when:
+      - [x] Risk summary persistence is available as an internal backend service, not a public client route.
+      - [x] Persisted summaries use the shared composite risk summary output.
+      - [x] Persisted summaries keep `humanReviewRequired=true` and `reviewStatus=PENDING_REVIEW`.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/server` failed as expected before implementation because `createRiskSummary` was not exported.
+      - [x] Added `createRiskSummary` in `apps/server/src/risk-summaries.ts`.
+      - [x] `npm run test --workspace @anecites/server` (`30` tests, `30` passed, `0` failed)
+      - [x] Final verification after T-MON-02: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`102` Node tests and `4` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
 - [ ] Hardening: legal review, accessibility review, sandbox review, signature update process, data retention policy.

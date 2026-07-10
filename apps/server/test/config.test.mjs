@@ -51,6 +51,18 @@ test("loadServerConfig accepts the required API server environment", () => {
     codeExecutionSourceLimitBytes: 65536,
     codeExecutionStdinLimitBytes: 8192,
     codeExecutionOutputLimitBytes: 65536,
+    livekitUrl: null,
+    livekitApiUrl: null,
+    livekitApiKey: null,
+    livekitApiSecret: null,
+    livekitTokenTtlSeconds: 3600,
+    livekitRecordingS3Endpoint: null,
+    livekitRecordingS3Bucket: null,
+    livekitRecordingS3AccessKeyId: null,
+    livekitRecordingS3SecretAccessKey: null,
+    livekitRecordingS3Region: "us-east-1",
+    livekitRecordingS3ForcePathStyle: true,
+    livekitRecordingKeyPrefix: "recordings/livekit",
   });
 });
 
@@ -98,6 +110,60 @@ test("loadServerConfig validates code execution provider settings", () => {
       }),
     /PISTON_REQUEST_TIMEOUT_MS must be less than or equal to 60000/,
   );
+});
+
+test("loadServerConfig validates LiveKit settings", () => {
+  const config = loadServerConfig({
+    ...validEnv,
+    LIVEKIT_URL: "ws://127.0.0.1:7880",
+    LIVEKIT_API_KEY: "devkey",
+    LIVEKIT_API_SECRET: "devsecret",
+    LIVEKIT_TOKEN_TTL_SECONDS: "900",
+  });
+
+  assert.equal(config.livekitUrl, "ws://127.0.0.1:7880");
+  assert.equal(config.livekitApiUrl, "http://127.0.0.1:7880");
+  assert.equal(config.livekitApiKey, "devkey");
+  assert.equal(config.livekitApiSecret, "devsecret");
+  assert.equal(config.livekitTokenTtlSeconds, 900);
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        LIVEKIT_URL: "not-a-url",
+      }),
+    /LIVEKIT_URL must be a valid URL/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        LIVEKIT_TOKEN_TTL_SECONDS: "86401",
+      }),
+    /LIVEKIT_TOKEN_TTL_SECONDS must be less than or equal to 86400/,
+  );
+
+  const recordingConfig = loadServerConfig({
+    ...validEnv,
+    S3_ENDPOINT: "http://127.0.0.1:9000",
+    S3_BUCKET: "anecites-dev",
+    S3_ACCESS_KEY_ID: "anecites",
+    S3_SECRET_ACCESS_KEY: "anecites_dev_password",
+    S3_REGION: "us-west-2",
+    S3_FORCE_PATH_STYLE: "false",
+    LIVEKIT_RECORDING_KEY_PREFIX: "custom/livekit",
+    LIVEKIT_RECORDING_S3_ENDPOINT: "http://minio:9000",
+  });
+
+  assert.equal(recordingConfig.livekitRecordingS3Endpoint, "http://minio:9000");
+  assert.equal(recordingConfig.livekitRecordingS3Bucket, "anecites-dev");
+  assert.equal(recordingConfig.livekitRecordingS3AccessKeyId, "anecites");
+  assert.equal(recordingConfig.livekitRecordingS3SecretAccessKey, "anecites_dev_password");
+  assert.equal(recordingConfig.livekitRecordingS3Region, "us-west-2");
+  assert.equal(recordingConfig.livekitRecordingS3ForcePathStyle, false);
+  assert.equal(recordingConfig.livekitRecordingKeyPrefix, "custom/livekit");
 });
 
 test("loadServerConfig rejects unsafe Judge0 execution limits", () => {

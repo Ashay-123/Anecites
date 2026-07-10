@@ -289,6 +289,7 @@ Deliverables:
 
 Gate:
 - Throttled-network call test.
+- Browser LiveKit reconnect smoke: `npm run smoke:livekit:browser --workspace @anecites/server`.
 - Audio-priority degradation test.
 - Screen-share correctness test.
 - Recording completeness test.

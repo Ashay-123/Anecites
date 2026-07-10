@@ -7,7 +7,14 @@ import {
   type SessionState,
 } from "@anecites/shared";
 
+import { type ServerConfig } from "./config.js";
 import { HttpError } from "./http-error.js";
+import {
+  createLiveKitJoinToken,
+  startLiveKitRoomRecording,
+  stopLiveKitRoomRecording,
+  type LiveKitEgressClient,
+} from "./livekit.js";
 
 type SessionWithParticipants = Prisma.SessionGetPayload<{
   include: {
@@ -58,7 +65,11 @@ const API_ROLE_TO_DB_USER_ROLE = {
   interviewer: "INTERVIEWER",
 } as const satisfies Record<ParticipantRole, string>;
 
-export function createSessionRouter(prisma: PrismaClient): Router {
+export function createSessionRouter(
+  prisma: PrismaClient,
+  config: ServerConfig,
+  liveKitEgressClient?: LiveKitEgressClient,
+): Router {
   const router = Router();
 
   router.post("/", async (request, response, next) => {
@@ -135,6 +146,63 @@ export function createSessionRouter(prisma: PrismaClient): Router {
 
       response.status(201).json({
         participant: serializeParticipant(participant),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sessionId/livekit-token", async (request, response, next) => {
+    try {
+      const body = parseLiveKitTokenBody(request.body);
+      const session = await findSessionOrThrow(prisma, request.params.sessionId);
+      const participant = session.participants.find((candidate) => candidate.id === body.participantId && !candidate.leftAt);
+
+      if (!participant) {
+        throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Participant not found");
+      }
+
+      const livekit = await createLiveKitJoinToken(config, {
+        sessionId: session.id,
+        participantId: participant.id,
+        participantName: participant.user.displayName,
+      });
+
+      response.status(201).json({
+        livekit,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sessionId/livekit-recording", async (request, response, next) => {
+    try {
+      const session = await findSessionOrThrow(prisma, request.params.sessionId);
+      const recording = await startLiveKitRoomRecording(
+        config,
+        {
+          sessionId: session.id,
+        },
+        liveKitEgressClient,
+      );
+
+      response.status(201).json({
+        recording,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sessionId/livekit-recording/:egressId/stop", async (request, response, next) => {
+    try {
+      await ensureSessionExists(prisma, request.params.sessionId);
+      const egressId = requireParam(request.params.egressId, "egressId");
+      const recording = await stopLiveKitRoomRecording(config, egressId, liveKitEgressClient);
+
+      response.status(200).json({
+        recording,
       });
     } catch (error) {
       next(error);
@@ -251,6 +319,15 @@ function parseTransitionBody(body: unknown): { state: SessionState } {
   };
 }
 
+function parseLiveKitTokenBody(body: unknown): { participantId: string } {
+  const record = requireRecord(body);
+  const participantId = requireNonEmptyString(record, "participantId");
+
+  return {
+    participantId,
+  };
+}
+
 function requireRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new HttpError(400, "BAD_REQUEST", "Request body must be a JSON object");
@@ -263,6 +340,14 @@ function requireNonEmptyString(record: Record<string, unknown>, fieldName: strin
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new HttpError(400, "BAD_REQUEST", `${fieldName} must be a non-empty string`);
   }
+  return value.trim();
+}
+
+function requireParam(value: string | undefined, fieldName: string): string {
+  if (!value || value.trim().length === 0) {
+    throw new HttpError(400, "BAD_REQUEST", `${fieldName} is required`);
+  }
+
   return value.trim();
 }
 

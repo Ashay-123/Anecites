@@ -133,6 +133,74 @@ services:
       - piston_internal
     <<: *default-logging
 
+  livekit:
+    image: ${LIVEKIT_IMAGE:-livekit/livekit-server:latest}
+    profiles:
+      - livekit
+    command:
+      - --config
+      - /etc/livekit.yaml
+    ports:
+      - "127.0.0.1:${LIVEKIT_HTTP_PORT:-7880}:7880"
+      - "127.0.0.1:${LIVEKIT_RTC_TCP_PORT:-7881}:7881"
+      - "127.0.0.1:${LIVEKIT_RTC_UDP_PORT:-7882}:7882/udp"
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    depends_on:
+      livekit-redis:
+        condition: service_healthy
+    networks:
+      - livekit_internal
+      - livekit_ingress
+    <<: *default-logging
+
+  livekit-egress:
+    image: ${LIVEKIT_EGRESS_IMAGE:-livekit/egress:latest}
+    profiles:
+      - livekit
+    environment:
+      EGRESS_CONFIG_FILE: /etc/livekit-egress.yaml
+    volumes:
+      - ./livekit-egress.yaml:/etc/livekit-egress.yaml:ro
+    depends_on:
+      livekit:
+        condition: service_started
+      livekit-redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - livekit_internal
+      - app_internal
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    shm_size: "256mb"
+    <<: *default-logging
+
+  livekit-redis:
+    image: redis:7-alpine
+    profiles:
+      - livekit
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+    volumes:
+      - livekit_redis_data:/data
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - livekit_internal
+    <<: *default-logging
+
   judge0-server:
     image: ${JUDGE0_IMAGE:-judge0/judge0:latest}
     profiles:
@@ -220,11 +288,15 @@ volumes:
   rabbitmq_data:
   minio_data:
   piston_packages:
+  livekit_redis_data:
   judge0_postgres_data:
 
 networks:
   app_internal:
   piston_internal:
+  livekit_internal:
+    internal: true
+  livekit_ingress:
   judge0_internal:
     internal: true
   judge0_ingress:

@@ -7,6 +7,8 @@ const requiredFiles = [
   "docker/docker-compose.yml",
   "docker/.env.example",
   "docker/judge0.conf",
+  "docker/livekit.yaml",
+  "docker/livekit-egress.yaml",
 ];
 
 const failures = [];
@@ -40,6 +42,8 @@ const result = spawnSync(
     "piston",
     "--profile",
     "judge0",
+    "--profile",
+    "livekit",
     "config",
     "--quiet",
   ],

@@ -11,6 +11,10 @@ test("desktop app renders the interview shell", () => {
   assert.match(html, /data-anecites-desktop="interview-shell"/);
   assert.match(html, /Session/);
   assert.match(html, /Candidate editor/);
+  assert.match(html, /Video call/);
+  assert.match(html, /Connect video/);
+  assert.match(html, /Check screen/);
+  assert.match(html, /Share screen/);
   assert.match(html, /Output/);
   assert.match(html, /data-anecites-editor="monaco-collab"/);
 });

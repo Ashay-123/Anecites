@@ -165,6 +165,77 @@ test("POST /code-executions maps JavaScript submissions to Piston execute", asyn
   });
 });
 
+test("POST /code-executions normalizes Piston process-limit failures as runtime errors", async (t) => {
+  const fakePiston = createFakePistonFetch({
+    language: "javascript",
+    version: "20.11.1",
+    run: {
+      stdout: "started=256\n",
+      stderr: "Error: spawn /piston/packages/node/20.11.1/bin/node EAGAIN\n",
+      output: "started=256\nError: spawn /piston/packages/node/20.11.1/bin/node EAGAIN\n",
+      code: 1,
+      signal: null,
+    },
+  });
+  const app = createApp(testConfig(), {
+    logger: quietLogger(),
+    fetch: fakePiston.fetchImpl,
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const result = await jsonRequest(server, "/code-executions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      languageId: 63,
+      sourceCode: "fork stress test",
+    }),
+  });
+
+  assert.equal(result.response.status, 201);
+  assert.equal(result.body.execution.status.id, 11);
+  assert.equal(result.body.execution.status.description, "Runtime Error");
+  assert.equal(result.body.execution.stdout, "started=256\n");
+  assert.match(result.body.execution.stderr, /EAGAIN/);
+  assert.equal(fakePiston.calls.length, 1);
+});
+
+test("POST /code-executions normalizes Piston blocked-network failures as runtime errors", async (t) => {
+  const fakePiston = createFakePistonFetch({
+    language: "javascript",
+    version: "20.11.1",
+    run: {
+      stdout: "piston-smoke-ok\n",
+      stderr: "EAI_AGAIN\n",
+      output: "piston-smoke-ok\nEAI_AGAIN\n",
+      code: 1,
+      signal: null,
+    },
+  });
+  const app = createApp(testConfig(), {
+    logger: quietLogger(),
+    fetch: fakePiston.fetchImpl,
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const result = await jsonRequest(server, "/code-executions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      languageId: 63,
+      sourceCode: "blocked network test",
+    }),
+  });
+
+  assert.equal(result.response.status, 201);
+  assert.equal(result.body.execution.status.id, 11);
+  assert.equal(result.body.execution.status.description, "Runtime Error");
+  assert.match(result.body.execution.stderr, /EAI_AGAIN/);
+  assert.equal(fakePiston.calls.length, 1);
+});
+
 test("POST /code-executions maps Piston timeout to a generic timeout error", async (t) => {
   const fakePiston = createFakePistonFetch({}, {
     error: new DOMException("timeout", "TimeoutError"),
@@ -251,4 +322,3 @@ test("POST /code-executions rejects invalid Piston responses and oversized outpu
     },
   });
 });
-

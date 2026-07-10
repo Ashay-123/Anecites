@@ -11,6 +11,7 @@ import { type FetchLike } from "./code-execution-provider.js";
 import { createCodeExecutionRouter } from "./code-executions.js";
 import { type ServerConfig } from "./config.js";
 import { isHttpError } from "./http-error.js";
+import { type LiveKitEgressClient } from "./livekit.js";
 import { consoleLogger, type Logger } from "./logger.js";
 import { createSessionRouter } from "./sessions.js";
 
@@ -18,6 +19,7 @@ export interface CreateAppOptions {
   logger?: Logger;
   prisma?: PrismaClient;
   fetch?: FetchLike;
+  liveKitEgressClient?: LiveKitEgressClient;
 }
 
 export function createApp(config: ServerConfig, options: CreateAppOptions = {}) {
@@ -45,7 +47,7 @@ export function createApp(config: ServerConfig, options: CreateAppOptions = {}) 
     });
   });
 
-  app.use("/sessions", requireAuth(config), createSessionRouter(prisma));
+  app.use("/sessions", requireAuth(config), createSessionRouter(prisma, config, options.liveKitEgressClient));
   app.use("/code-executions", requireAuth(config), createCodeExecutionRouter(config, fetchImpl));
 
   app.use((_request: Request, response: Response) => {

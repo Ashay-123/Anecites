@@ -80,6 +80,75 @@ test("collab server relays Yjs updates within a session room", async () => {
   }
 });
 
+test("collab server converges concurrent edits without dropped updates", async () => {
+  const server = await startServer();
+  const token = await mintToken("candidate-1", "candidate");
+
+  try {
+    const firstSocket = await connect(server.port, "session-a", token, {
+      documentId: "document-a",
+    });
+    const secondSocket = await connect(server.port, "session-a", token, {
+      documentId: "document-a",
+    });
+    const firstDoc = new Y.Doc();
+    const secondDoc = new Y.Doc();
+
+    Y.applyUpdate(
+      firstDoc,
+      Buffer.from((await waitForMessage(firstSocket, "sync:snapshot")).update, "base64"),
+    );
+    Y.applyUpdate(
+      secondDoc,
+      Buffer.from((await waitForMessage(secondSocket, "sync:snapshot")).update, "base64"),
+    );
+
+    firstDoc.getText("main").insert(0, "alice\n");
+    secondDoc.getText("main").insert(0, "bob\n");
+
+    firstSocket.send(JSON.stringify({
+      type: "sync:update",
+      update: Buffer.from(Y.encodeStateAsUpdate(firstDoc)).toString("base64"),
+    }));
+    secondSocket.send(JSON.stringify({
+      type: "sync:update",
+      update: Buffer.from(Y.encodeStateAsUpdate(secondDoc)).toString("base64"),
+    }));
+
+    Y.applyUpdate(
+      firstDoc,
+      Buffer.from((await waitForMessage(firstSocket, "sync:update")).update, "base64"),
+    );
+    Y.applyUpdate(
+      secondDoc,
+      Buffer.from((await waitForMessage(secondSocket, "sync:update")).update, "base64"),
+    );
+
+    assertIncludesConcurrentEdits(firstDoc.getText("main").toString());
+    assertIncludesConcurrentEdits(secondDoc.getText("main").toString());
+
+    const lateSocket = await connect(server.port, "session-a", token, {
+      documentId: "document-a",
+    });
+    const lateDoc = new Y.Doc();
+    Y.applyUpdate(
+      lateDoc,
+      Buffer.from((await waitForMessage(lateSocket, "sync:snapshot")).update, "base64"),
+    );
+
+    assertIncludesConcurrentEdits(lateDoc.getText("main").toString());
+
+    firstSocket.close();
+    secondSocket.close();
+    lateSocket.close();
+    firstDoc.destroy();
+    secondDoc.destroy();
+    lateDoc.destroy();
+  } finally {
+    await server.close();
+  }
+});
+
 test("collab server isolates updates by session room", async () => {
   const server = await startServer();
   const token = await mintToken("candidate-1", "candidate");
@@ -100,6 +169,80 @@ test("collab server isolates updates by session room", async () => {
     first.close();
     second.close();
   } finally {
+    await server.close();
+  }
+});
+
+test("collab server handles 50 concurrent sessions without cross-session bleed", async () => {
+  const server = await startServer();
+  const token = await mintToken("candidate-1", "candidate");
+  const sessions = [];
+
+  try {
+    for (let index = 0; index < 50; index += 1) {
+      const sessionId = `load-session-${index}`;
+      const documentId = `document-${index}`;
+      const [receiver, sender] = await Promise.all([
+        connect(server.port, sessionId, token, { documentId }),
+        connect(server.port, sessionId, token, { documentId }),
+      ]);
+
+      sessions.push({
+        receiver,
+        sender,
+        receiverDoc: new Y.Doc(),
+        payload: `payload-${index}`,
+      });
+    }
+
+    await waitUntil(() => server.roomCount() === 50, 2_000);
+    assert.equal(server.roomCount(), 50);
+
+    await Promise.all(
+      sessions.flatMap((session) => [
+        drainSnapshot(session.receiver),
+        drainSnapshot(session.sender),
+      ]),
+    );
+
+    for (const session of sessions) {
+      session.sender.send(JSON.stringify({
+        type: "sync:update",
+        update: createTextUpdate(session.payload),
+      }));
+    }
+
+    await Promise.all(
+      sessions.map(async (session) => {
+        const message = await waitForMessage(session.receiver, "sync:update", 2_000);
+        Y.applyUpdate(
+          session.receiverDoc,
+          Buffer.from(message.update, "base64"),
+        );
+
+        assert.equal(session.receiverDoc.getText("main").toString(), session.payload);
+      }),
+    );
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+
+    for (const session of sessions) {
+      const state = socketStates.get(session.receiver);
+      assert(state);
+      assert.deepEqual(
+        state.messages.filter((message) => message.type === "sync:update"),
+        [],
+      );
+    }
+  } finally {
+    for (const session of sessions) {
+      session.receiver.close();
+      session.sender.close();
+      session.receiverDoc.destroy();
+    }
+
     await server.close();
   }
 });
@@ -264,6 +407,57 @@ test("collab telemetry flags large atomic inserts from Yjs updates", async () =>
   }
 });
 
+test("collab telemetry flags simulated OS-level paste injection without a paste event", async () => {
+  const rawEvents = [];
+  const aggregates = [];
+  const server = await startServer({
+    telemetry: {
+      atomicInsertThreshold: 10,
+      aggregateWindowMs: 0,
+      recordRawEvent: (event) => {
+        rawEvents.push(event);
+      },
+      flushAggregate: (aggregate) => {
+        aggregates.push(aggregate);
+      },
+      now: fixedClock("2026-07-10T01:00:00.000Z"),
+    },
+  });
+  const token = await mintToken("participant-1", "candidate");
+
+  try {
+    const socket = await connect(server.port, "session-a", token, {
+      documentId: "document-a",
+    });
+    await drainSnapshot(socket);
+
+    socket.send(JSON.stringify({
+      type: "sync:update",
+      update: createTextUpdate("os-level paste injection payload"),
+    }));
+    await waitUntil(() => aggregates.length === 1);
+
+    assert.equal(rawEvents.length, 1);
+    assert.equal(rawEvents[0].type, "editor.atomic_insert");
+    assert.equal(rawEvents[0].sessionId, "session-a");
+    assert.equal(rawEvents[0].participantId, "participant-1");
+    assert.equal(rawEvents[0].documentId, "document-a");
+    assert.equal(rawEvents[0].insertedCharacterCount, 32);
+    assert.equal(rawEvents[0].source, "programmatic");
+    assert.equal(rawEvents[0].storagePolicy, "object-storage-only");
+
+    assert.equal(aggregates.length, 1);
+    assert.equal(aggregates[0].insertEventCount, 1);
+    assert.equal(aggregates[0].pasteBlockedCount, 0);
+    assert.equal(aggregates[0].atomicInsertCount, 1);
+    assert.equal(aggregates[0].maxInsertSize, 32);
+
+    socket.close();
+  } finally {
+    await server.close();
+  }
+});
+
 test("collab telemetry flushes small insert aggregates without raw atomic events", async () => {
   const rawEvents = [];
   const aggregates = [];
@@ -412,6 +606,11 @@ function createTextUpdate(value) {
   doc.getText("main").insert(0, value);
 
   return Buffer.from(Y.encodeStateAsUpdate(doc)).toString("base64");
+}
+
+function assertIncludesConcurrentEdits(value) {
+  assert.match(value, /alice\n/);
+  assert.match(value, /bob\n/);
 }
 
 async function drainSnapshot(socket) {

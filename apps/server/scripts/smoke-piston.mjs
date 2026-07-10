@@ -11,6 +11,9 @@ const smokeOutput = "piston-smoke-ok";
 const authJwtSecret = process.env.AUTH_JWT_SECRET ?? "local_smoke_auth_secret_minimum_32_characters";
 const smokeLanguageId = Number(process.env.SMOKE_PISTON_LANGUAGE_ID ?? "63");
 const smokeSourceCode = process.env.SMOKE_PISTON_SOURCE_CODE ?? `console.log("${smokeOutput}")`;
+const expectedStatusDescription = process.env.SMOKE_PISTON_EXPECT_STATUS_DESCRIPTION ?? "Accepted";
+const expectedStdout = process.env.SMOKE_PISTON_EXPECT_STDOUT;
+const expectedStderrIncludes = process.env.SMOKE_PISTON_EXPECT_STDERR_INCLUDES ?? "";
 
 await main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
@@ -21,6 +24,12 @@ async function main() {
   if (!Number.isSafeInteger(smokeLanguageId) || smokeLanguageId < 1) {
     throw new Error("SMOKE_PISTON_LANGUAGE_ID must be a positive integer");
   }
+
+  const expectedStatusId = parseOptionalPositiveInteger(
+    "SMOKE_PISTON_EXPECT_STATUS_ID",
+    process.env.SMOKE_PISTON_EXPECT_STATUS_ID,
+    3,
+  );
 
   const config = loadServerConfig({
     NODE_ENV: "test",
@@ -73,14 +82,44 @@ async function main() {
       throw new Error(`Expected HTTP 201 from code proxy, received ${response.status}: ${JSON.stringify(body)}`);
     }
 
-    if (body.execution?.stdout !== `${smokeOutput}\n` && body.execution?.stdout !== smokeOutput) {
+    if (body.execution?.status?.id !== expectedStatusId) {
+      throw new Error(`Unexpected Piston smoke status id: ${JSON.stringify(body.execution)}`);
+    }
+
+    if (body.execution?.status?.description !== expectedStatusDescription) {
+      throw new Error(`Unexpected Piston smoke status description: ${JSON.stringify(body.execution)}`);
+    }
+
+    if (expectedStdout === undefined && body.execution?.stdout !== `${smokeOutput}\n` && body.execution?.stdout !== smokeOutput) {
       throw new Error(`Unexpected Piston smoke result: ${JSON.stringify(body.execution)}`);
+    }
+
+    if (expectedStdout !== undefined && body.execution?.stdout !== expectedStdout) {
+      throw new Error(`Unexpected Piston smoke stdout: ${JSON.stringify(body.execution)}`);
+    }
+
+    if (expectedStderrIncludes && !(body.execution?.stderr ?? "").includes(expectedStderrIncludes)) {
+      throw new Error(`Unexpected Piston smoke stderr: ${JSON.stringify(body.execution)}`);
     }
 
     console.log(`Piston proxy smoke passed with language ${smokeLanguageId}.`);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+}
+
+function parseOptionalPositiveInteger(fieldName, value, defaultValue) {
+  const rawValue = value?.trim();
+  if (!rawValue) {
+    return defaultValue;
+  }
+
+  const parsed = Number(rawValue);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`${fieldName} must be a positive integer`);
+  }
+
+  return parsed;
 }
 
 function listen(app) {
@@ -111,4 +150,3 @@ function loadDotEnv(path) {
     }
   }
 }
-

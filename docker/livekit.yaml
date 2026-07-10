@@ -1,0 +1,14 @@
+port: 7880
+bind_addresses:
+  - 0.0.0.0
+
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: false
+
+redis:
+  address: livekit-redis:6379
+
+keys:
+  devkey: devsecret_livekit_local_minimum_32_chars

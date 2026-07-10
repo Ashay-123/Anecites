@@ -29,6 +29,18 @@ export interface ServerConfig {
   codeExecutionSourceLimitBytes: number;
   codeExecutionStdinLimitBytes: number;
   codeExecutionOutputLimitBytes: number;
+  livekitUrl: string | null;
+  livekitApiUrl: string | null;
+  livekitApiKey: string | null;
+  livekitApiSecret: string | null;
+  livekitTokenTtlSeconds: number;
+  livekitRecordingS3Endpoint: string | null;
+  livekitRecordingS3Bucket: string | null;
+  livekitRecordingS3AccessKeyId: string | null;
+  livekitRecordingS3SecretAccessKey: string | null;
+  livekitRecordingS3Region: string;
+  livekitRecordingS3ForcePathStyle: boolean;
+  livekitRecordingKeyPrefix: string;
 }
 
 type EnvironmentInput = Record<string, string | undefined>;
@@ -44,6 +56,9 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
   const judge0AuthHeader = parseOptionalHeaderName(env.JUDGE0_AUTHN_HEADER) ?? (judge0AuthToken ? "X-Judge0-Token" : null);
   const judge0RequestTimeoutMs = parsePositiveInteger("JUDGE0_REQUEST_TIMEOUT_MS", env.JUDGE0_REQUEST_TIMEOUT_MS, 15_000, 60_000);
   const pistonRequestTimeoutMs = parsePositiveInteger("PISTON_REQUEST_TIMEOUT_MS", env.PISTON_REQUEST_TIMEOUT_MS, 15_000, 60_000);
+  const livekitTokenTtlSeconds = parsePositiveInteger("LIVEKIT_TOKEN_TTL_SECONDS", env.LIVEKIT_TOKEN_TTL_SECONDS, 3_600, 86_400);
+  const livekitUrl = parseOptionalUrl("LIVEKIT_URL", env.LIVEKIT_URL);
+  const livekitApiUrl = parseOptionalUrl("LIVEKIT_API_URL", env.LIVEKIT_API_URL) ?? deriveLiveKitApiUrl(livekitUrl);
   const codeExecutionAllowedLanguageIds = parseRequiredPositiveIntegerList(
     "CODE_EXECUTION_ALLOWED_LANGUAGE_IDS",
     env.CODE_EXECUTION_ALLOWED_LANGUAGE_IDS ?? env.JUDGE0_ALLOWED_LANGUAGE_IDS,
@@ -104,6 +119,21 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
       65_536,
       1_048_576,
     ),
+    livekitUrl,
+    livekitApiUrl,
+    livekitApiKey: parseOptionalString(env.LIVEKIT_API_KEY),
+    livekitApiSecret: parseOptionalString(env.LIVEKIT_API_SECRET),
+    livekitTokenTtlSeconds,
+    livekitRecordingS3Endpoint: parseOptionalUrl(
+      "LIVEKIT_RECORDING_S3_ENDPOINT",
+      env.LIVEKIT_RECORDING_S3_ENDPOINT,
+    ) ?? parseOptionalUrl("S3_ENDPOINT", env.S3_ENDPOINT),
+    livekitRecordingS3Bucket: parseOptionalString(env.S3_BUCKET),
+    livekitRecordingS3AccessKeyId: parseOptionalString(env.S3_ACCESS_KEY_ID),
+    livekitRecordingS3SecretAccessKey: parseOptionalString(env.S3_SECRET_ACCESS_KEY),
+    livekitRecordingS3Region: parseOptionalString(env.S3_REGION) ?? "us-east-1",
+    livekitRecordingS3ForcePathStyle: parseBoolean("S3_FORCE_PATH_STYLE", env.S3_FORCE_PATH_STYLE, true),
+    livekitRecordingKeyPrefix: parseStorageKeyPrefix(env.LIVEKIT_RECORDING_KEY_PREFIX, "recordings/livekit"),
   };
 }
 
@@ -144,6 +174,34 @@ function parseRequiredUrl(fieldName: string, value: string | undefined): string 
   }
 }
 
+function parseOptionalUrl(fieldName: string, value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    return new URL(trimmed).toString().replace(/\/$/, "");
+  } catch {
+    throw new Error(`${fieldName} must be a valid URL`);
+  }
+}
+
+function deriveLiveKitApiUrl(livekitUrl: string | null): string | null {
+  if (!livekitUrl) {
+    return null;
+  }
+
+  const url = new URL(livekitUrl);
+  if (url.protocol === "ws:") {
+    url.protocol = "http:";
+  } else if (url.protocol === "wss:") {
+    url.protocol = "https:";
+  }
+
+  return url.toString().replace(/\/$/, "");
+}
+
 function parseJwtSecret(value: string | undefined): string {
   const trimmed = value?.trim();
   if (!trimmed) {
@@ -160,6 +218,29 @@ function parseJwtSecret(value: string | undefined): string {
 function parseOptionalString(value: string | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed || null;
+}
+
+function parseBoolean(fieldName: string, value: string | undefined, defaultValue: boolean): boolean {
+  const trimmed = value?.trim().toLowerCase();
+
+  if (!trimmed) {
+    return defaultValue;
+  }
+
+  if (trimmed === "true") {
+    return true;
+  }
+
+  if (trimmed === "false") {
+    return false;
+  }
+
+  throw new Error(`${fieldName} must be true or false`);
+}
+
+function parseStorageKeyPrefix(value: string | undefined, defaultValue: string): string {
+  const prefix = value?.trim() || defaultValue;
+  return prefix.replace(/^\/+|\/+$/g, "");
 }
 
 function parseOptionalHeaderName(value: string | undefined): string | null {

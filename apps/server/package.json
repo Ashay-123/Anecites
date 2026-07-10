@@ -19,13 +19,16 @@
     "test": "npm run build && node --test --test-isolation=none test/*.test.mjs",
     "smoke:piston": "npm run build && node scripts/smoke-piston.mjs",
     "smoke:judge0": "npm run build && node scripts/smoke-judge0.mjs",
+    "smoke:livekit": "npm run build && node scripts/smoke-livekit.mjs",
+    "smoke:livekit:browser": "npm run build && node scripts/smoke-livekit-browser.mjs",
     "dev": "node dist/index.js"
   },
   "dependencies": {
     "@anecites/db": "0.0.0",
     "@anecites/shared": "0.0.0",
     "express": "5.2.1",
-    "jose": "6.2.3"
+    "jose": "6.2.3",
+    "livekit-server-sdk": "2.17.0"
   },
   "devDependencies": {
     "@types/express": "5.0.6",

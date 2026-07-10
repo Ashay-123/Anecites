@@ -11,7 +11,20 @@ export { createCodeExecutionRouter } from "./code-executions.js";
 export { type FetchLike } from "./code-execution-provider.js";
 export { loadServerConfig, type CodeExecutionProviderName, type ServerConfig, type NodeEnv } from "./config.js";
 export { HttpError } from "./http-error.js";
+export {
+  createLiveKitJoinToken,
+  createLiveKitParticipantIdentity,
+  createLiveKitRoomName,
+  startLiveKitRoomRecording,
+  stopLiveKitRoomRecording,
+  type LiveKitEgressClient,
+  type LiveKitJoinTokenRequest,
+  type LiveKitJoinTokenResponse,
+  type LiveKitRecordingInfo,
+  type LiveKitRecordingResponse,
+} from "./livekit.js";
 export { consoleLogger, type Logger } from "./logger.js";
+export { createRiskSummary, type CreateRiskSummaryRequest } from "./risk-summaries.js";
 export { createSessionRouter } from "./sessions.js";
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

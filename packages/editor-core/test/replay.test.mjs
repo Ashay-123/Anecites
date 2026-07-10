@@ -50,6 +50,36 @@ test("editor replay preserves elapsed timing between operations", () => {
   replay.document.destroy();
 });
 
+test("editor replay matches original keystroke timing within documented tolerance", () => {
+  const timingToleranceMs = 5;
+  const updates = createKeystrokeReplayUpdates("hello");
+  const records = parseEditorReplayEvidenceNdjson([
+    replayLine("2026-01-01T00:00:10.000Z", updates[0]),
+    replayLine("2026-01-01T00:00:10.080Z", updates[1]),
+    replayLine("2026-01-01T00:00:10.225Z", updates[2]),
+    replayLine("2026-01-01T00:00:10.310Z", updates[3]),
+    replayLine("2026-01-01T00:00:10.500Z", updates[4]),
+  ].join("\n"));
+
+  const replay = replayEditorEvidence(records, {
+    documentId: "document-a",
+  });
+
+  assert.equal(replay.finalText, "hello");
+  assertTimingWithinTolerance(
+    replay.timeline.map((step) => step.elapsedMs),
+    [0, 80, 225, 310, 500],
+    timingToleranceMs,
+  );
+  assertTimingWithinTolerance(
+    replay.timeline.map((step) => step.delayMs),
+    [0, 80, 145, 85, 190],
+    timingToleranceMs,
+  );
+
+  replay.document.destroy();
+});
+
 test("editor replay rejects invalid evidence lines", () => {
   assert.throws(
     () => parseEditorReplayEvidenceNdjson("{\"type\":\"editor.unknown\"}\n"),
@@ -71,6 +101,33 @@ function createReplayUpdates() {
   document.destroy();
 
   return [first, second];
+}
+
+function createKeystrokeReplayUpdates(value) {
+  const document = createEditorYjsDocument({
+    documentId: "document-a",
+  });
+  const updates = [];
+
+  for (const character of value) {
+    document.text.insert(document.text.length, character);
+    updates.push(encodeEditorYjsState(document));
+  }
+
+  document.destroy();
+
+  return updates;
+}
+
+function assertTimingWithinTolerance(actual, expected, toleranceMs) {
+  assert.equal(actual.length, expected.length);
+
+  for (let index = 0; index < actual.length; index += 1) {
+    assert.ok(
+      Math.abs(actual[index] - expected[index]) <= toleranceMs,
+      `Expected ${actual[index]}ms to be within ${toleranceMs}ms of ${expected[index]}ms`,
+    );
+  }
 }
 
 function replayLine(occurredAt, update) {

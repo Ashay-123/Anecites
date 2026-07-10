@@ -1,4 +1,4 @@
-import { type ClipboardEvent, type ReactElement } from "react";
+import { type ClipboardEvent, type MouseEvent, type ReactElement } from "react";
 
 import {
   createEditorPasteBlockedTelemetryEvent,
@@ -18,16 +18,28 @@ export interface MonacoCollabEditorProps {
 export function MonacoCollabEditor(props: MonacoCollabEditorProps): ReactElement {
   const { document, language, readOnly = false, className, disablePaste = true, telemetry } = props;
 
+  const emitPasteBlockedTelemetry = () => {
+    if (telemetry) {
+      telemetry.onEvent(createEditorPasteBlockedTelemetryEvent(document, telemetry));
+    }
+  };
+
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     if (!disablePaste) {
       return;
     }
 
     event.preventDefault();
+    emitPasteBlockedTelemetry();
+  };
 
-    if (telemetry) {
-      telemetry.onEvent(createEditorPasteBlockedTelemetryEvent(document, telemetry));
+  const handleContextMenu = (event: MouseEvent<HTMLDivElement>) => {
+    if (!disablePaste) {
+      return;
     }
+
+    event.preventDefault();
+    emitPasteBlockedTelemetry();
   };
 
   return (
@@ -38,6 +50,7 @@ export function MonacoCollabEditor(props: MonacoCollabEditorProps): ReactElement
       data-language={language}
       data-paste-disabled={disablePaste ? "true" : "false"}
       data-read-only={readOnly ? "true" : "false"}
+      onContextMenu={handleContextMenu}
       onPaste={handlePaste}
     />
   );
