@@ -109,6 +109,30 @@ services:
       - app_internal
     <<: *default-logging
 
+  piston:
+    image: ${PISTON_IMAGE:-ghcr.io/engineer-man/piston}
+    profiles:
+      - piston
+    privileged: true
+    environment:
+      PISTON_DISABLE_NETWORKING: "true"
+      PISTON_MAX_PROCESS_COUNT: "32"
+      PISTON_OUTPUT_MAX_SIZE: "65536"
+      PISTON_MAX_OPEN_FILES: "64"
+      PISTON_MAX_FILE_SIZE: "65536"
+      PISTON_COMPILE_TIMEOUT: "5000"
+      PISTON_RUN_TIMEOUT: "5000"
+      PISTON_COMPILE_MEMORY_LIMIT: "134217728"
+      PISTON_RUN_MEMORY_LIMIT: "134217728"
+      PISTON_MAX_CONCURRENT_JOBS: "8"
+    ports:
+      - "127.0.0.1:${PISTON_PORT:-2000}:2000"
+    volumes:
+      - piston_packages:/piston/packages
+    networks:
+      - piston_internal
+    <<: *default-logging
+
   judge0-server:
     image: ${JUDGE0_IMAGE:-judge0/judge0:latest}
     profiles:
@@ -195,10 +219,12 @@ volumes:
   redis_data:
   rabbitmq_data:
   minio_data:
+  piston_packages:
   judge0_postgres_data:
 
 networks:
   app_internal:
+  piston_internal:
   judge0_internal:
     internal: true
   judge0_ingress:

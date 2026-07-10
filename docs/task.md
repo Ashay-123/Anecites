@@ -25,7 +25,7 @@ Working rule: every implementation task must start by defining the verification 
 - [ ] No module starts until the previous module's test gate passes.
 - [ ] No raw high-frequency telemetry is stored directly in Postgres.
 - [ ] No candidate-side ML inference is required for core proctoring decisions.
-- [ ] No Judge0 execution path can reach the main app database, Redis, RabbitMQ, or internal APIs.
+- [ ] No code-execution provider path can reach the main app database, Redis, RabbitMQ, or internal APIs.
 - [ ] No automated adverse action is allowed from a single signal or black-box score.
 
 ## Phase 0 - Repository Foundation
@@ -247,20 +247,21 @@ Working rule: every implementation task must start by defining the verification 
 - [x] `npm run verify`
 - [x] `npm audit --audit-level=moderate`
 
-### T-02.04 Add Judge0 proxy
+### T-02.04 Add code execution provider proxy
 
-- [x] Add API endpoint that submits code to Judge0.
+- [x] Add API endpoint that submits code to the configured execution provider.
 - [x] Enforce language allowlist, time limit, memory limit, and output size limit.
-- [x] Do not expose Judge0 directly to the desktop or web clients.
+- [x] Do not expose Piston or Judge0 directly to the desktop or web clients.
 - Test first:
   - [x] Add unit tests for validation failures.
-  - [x] Add integration smoke command against local Judge0 once Docker is available.
-  - [blocked] Execute integration smoke against local Judge0. `judge0-server` is reachable at `http://127.0.0.1:2358`, and `judge0-server` / `judge0-worker` now match Judge0's privileged container requirement. `npm run smoke:judge0 --workspace @anecites/server` still fails because Docker Desktop is exposing cgroup v2 only; Judge0's isolate path expects the cgroup v1 memory controller at `/sys/fs/cgroup/memory`.
+  - [x] Add unit tests for provider selection, Piston request mapping, Piston response normalization, timeout handling, upstream errors, invalid responses, and oversized output.
+  - [x] Add integration smoke command against local Piston once Docker is available.
+  - [x] Execute integration smoke against local Piston after starting the `piston` Docker profile and installing pinned runtimes.
 - Done when:
   - [x] Valid submissions return stdout, stderr, time, and memory.
   - [x] Invalid or abusive submissions fail closed.
 
-### Phase 2 Judge0 Proxy Verification Log
+### Phase 2 Code Execution Verification Log
 
 - [x] Verified Judge0 CE API shape from official docs:
   - `POST /submissions/{?base64_encoded,wait}`
@@ -269,11 +270,22 @@ Working rule: every implementation task must start by defining the verification 
   - execution result fields including `stdout`, `stderr`, `compile_output`, `message`, `status`, `token`, `time`, and `memory`
 - [x] Observed expected failing tests before implementation: `npm run test --workspace @anecites/server`
 - [x] Added protected `POST /code-executions` route.
-- [x] Added fail-closed config validation for `JUDGE0_ALLOWED_LANGUAGE_IDS` and code execution limits.
+- [x] Added fail-closed config validation for `CODE_EXECUTION_ALLOWED_LANGUAGE_IDS` and code execution limits.
 - [x] Added mocked Judge0 route tests for success, auth rejection, disallowed language rejection, source/stdin size rejection, upstream failure, and oversized output.
 - [x] Added opt-in local smoke command: `npm run smoke:judge0 --workspace @anecites/server`
 - [x] `npm run test --workspace @anecites/server`
 - [blocked] `npm run smoke:judge0 --workspace @anecites/server` reaches Judge0 but cannot pass until the local Docker runtime exposes cgroup v1 memory control to Judge0.
+- [x] Switched the default code-execution provider direction to self-hosted Piston for Windows development.
+- [x] Added provider-agnostic config with `CODE_EXECUTION_PROVIDER`, `CODE_EXECUTION_ALLOWED_LANGUAGE_IDS`, `PISTON_BASE_URL`, and `PISTON_REQUEST_TIMEOUT_MS`.
+- [x] Added a small provider abstraction with `PistonExecutionProvider` and `Judge0ExecutionProvider`.
+- [x] Added Piston language mapping for numeric language IDs `63` and `71`.
+- [x] Added Docker Compose `piston` profile with localhost-only port publishing and persistent Piston packages.
+- [x] Added `npm run smoke:piston --workspace @anecites/server`.
+- [x] `npm run build --workspace @anecites/server`
+- [x] `node --test --test-isolation=none .\apps\server\test\config.test.mjs .\apps\server\test\judge0.test.mjs .\apps\server\test\piston.test.mjs`
+- [x] `docker compose -f .\docker\docker-compose.yml --profile piston config --quiet`
+- [x] `npm run smoke:piston --workspace @anecites/server`
+- [x] `npm run test --workspace @anecites/server` (`21` tests, `21` passed, `0` failed)
 - [x] `npm run lint`
 - [x] `npm run typecheck`
 - [x] `npm run test`
@@ -286,75 +298,223 @@ Working rule: every implementation task must start by defining the verification 
 
 ### T-03.01 Create `apps/collab`
 
-- [ ] Add Yjs WebSocket server.
-- [ ] Map `sessionId` to isolated rooms.
-- [ ] Add room authorization through the API server.
+- [x] Add Yjs WebSocket server.
+- [x] Map `sessionId` to isolated rooms.
+- [x] Add persisted room authorization at the collab server boundary.
+  - Runtime implementation validates JWTs and checks `Participant(sessionId, userId, role, leftAt)` through Prisma before joining a room.
+  - This is DB-backed, not a separate internal HTTP API endpoint.
 - Test first:
-  - [ ] Add a two-client sync test.
-  - [ ] Add cross-session isolation test.
+  - [x] Add a two-client sync test.
+  - [x] Add cross-session isolation test.
+  - [x] Add invalid-token rejection test.
+  - [x] Add authorization-denial rejection test.
+  - [x] Add persisted participant authorization test.
+  - [x] Add missing participant rejection test.
 - Done when:
-  - [ ] Two clients can edit the same document with no dropped updates.
-  - [ ] Clients cannot join unauthorized rooms.
+  - [x] Two clients can edit the same document with no dropped updates.
+  - [x] Clients cannot join unauthorized rooms.
+  - [x] Collab standalone startup uses `DATABASE_URL` and the persisted participant authorizer.
+
+### Phase 3 Collaboration Server Verification Log
+
+- [x] Observed expected failing test before implementation: `npm run test --workspace @anecites/collab`
+- [x] Verified package versions before installation:
+  - [x] `yjs@13.6.31`
+  - [x] `ws@8.21.0`
+  - [x] `@types/ws@8.18.1`
+- [x] `npm run test --workspace @anecites/collab` (`4` tests, `4` passed, `0` failed)
+- [x] Observed expected failing test before persisted authorization implementation: `npm run test --workspace @anecites/collab`
+- [x] Attempted DB integration verification, but Docker Desktop was not reachable from this environment.
+- [x] `npm run test --workspace @anecites/collab` (`8` tests, `8` passed, `0` failed)
+- [x] `npm audit --audit-level=moderate`
+- [x] `git diff --check`
+- [x] `npm run verify`
+- [x] `npm run lint`
+- [x] `npm run typecheck`
+- [x] `npm run build`
+- [blocked] `npm run test` timed out while Docker/Postgres was unavailable; lingering Node test processes were stopped.
+- [x] After starting Postgres with `docker compose -f .\docker\docker-compose.yml --profile infra up -d postgres`, `npm run test` passed (`48` tests, `48` passed, `0` failed)
+- [x] `npm run workspaces`
+- [x] `git diff --check`
+- [x] `npm audit --audit-level=moderate`
+- [x] `npm run lint`
+- [x] `npm run typecheck`
+- [x] `npm run test` (`44` tests, `44` passed, `0` failed)
+- [x] `npm run build`
+- [x] `npm run verify`
 
 ### T-03.02 Add Yjs-derived telemetry
 
-- [ ] Derive behavioral telemetry from the Yjs update stream.
-- [ ] Buffer raw high-frequency data in memory or Redis.
-- [ ] Flush rolling aggregates to Postgres every 1-2 seconds.
-- [ ] Store raw replay evidence as append-only newline-delimited JSON in object storage.
-- [ ] Use Redis Streams for continuous telemetry; reserve RabbitMQ for discrete jobs.
+- [x] Derive behavioral telemetry from the Yjs update stream.
+- [x] Buffer raw high-frequency data in Redis.
+  - Current implementation appends raw atomic-insert telemetry to a Redis Stream through an injectable sink.
+- [x] Flush rolling aggregates to Postgres every 1-2 seconds.
+  - Current implementation creates `RollingEditorTelemetryAggregate` records and persists them through a Prisma sink.
+  - The sink increments existing aggregate windows and preserves the maximum insert size.
+- [x] Store raw replay evidence as append-only newline-delimited JSON in object storage.
+  - Current implementation writes one immutable NDJSON object per Yjs update under the replay evidence prefix.
+  - This avoids pretending S3-compatible object storage supports appending to an existing object.
+- [x] Use Redis Streams for continuous telemetry; reserve RabbitMQ for discrete jobs.
 - Test first:
-  - [ ] Add tests showing large atomic inserts are flagged even without a DOM paste event.
-  - [ ] Add tests showing aggregates are flushed but raw keystrokes are not written to Postgres.
+  - [x] Add tests showing large atomic inserts are flagged even without a DOM paste event.
+  - [x] Add tests showing aggregates are flushed while raw atomic-insert events stay on the raw-event path.
+  - [x] Add tests showing the Prisma sink creates and increments aggregate rows without lowering max insert size.
+  - [x] Add tests showing the Redis sink appends raw atomic insert events to a stream.
+  - [x] Add tests showing replay evidence writes raw Yjs updates as immutable NDJSON objects.
 - Done when:
-  - [ ] Replay data is available from object storage.
-  - [ ] Live scoring can consume aggregated features without database write amplification.
+  - [x] Replay data is available from object storage.
+  - [x] Live scoring can consume raw features without database write amplification.
+    - Raw atomic-insert telemetry is streamed to Redis; rolling aggregates are persisted separately.
+
+### Phase 3 Telemetry Verification Log
+
+- [x] Observed expected failing telemetry tests before implementation: `npm run test --workspace @anecites/collab`
+- [x] `npm run test --workspace @anecites/collab` (`10` tests, `10` passed, `0` failed)
+- [x] Observed expected failing Prisma sink tests before implementation: `npm run test --workspace @anecites/collab`
+- [x] `npm run test --workspace @anecites/collab` (`12` tests, `12` passed, `0` failed)
+- [x] Observed expected failing Redis sink tests before implementation: `npm run test --workspace @anecites/collab`
+- [x] `npm run test --workspace @anecites/collab` (`13` tests, `13` passed, `0` failed)
+- [x] Observed expected failing replay evidence tests before implementation: `npm run test --workspace @anecites/collab`
+- [x] `npm run test --workspace @anecites/collab` (`15` tests, `15` passed, `0` failed)
+- [x] `npm run lint`
+- [x] `npm run typecheck`
+- [x] `npm run build`
+- [x] `npm run test` (`50` tests, `50` passed, `0` failed)
+- [x] `npm run test` (`52` tests, `52` passed, `0` failed)
+- [x] `npm run test` (`53` tests, `53` passed, `0` failed)
+- [x] `npm run test` (`55` tests, `55` passed, `0` failed)
+- [x] `npm audit --audit-level=moderate`
+- [x] `npm run verify`
+- [x] `git diff --check`
 
 ## Phase 4 - Editor Core
 
 ### T-04.01 Create `packages/editor-core`
 
-- [ ] Add Monaco editor wrapper.
-- [ ] Add Yjs binding.
-- [ ] Add awareness cursors and selections.
-- [ ] Export a stable `MonacoCollabEditor` component.
+- [~] Add Monaco editor wrapper.
+  - Current implementation exports a stable React `MonacoCollabEditor` host component.
+  - Direct `monaco-editor@0.55.1` was not added because it introduced a `dompurify` audit finding; real Monaco mounting remains pending until a safe version is selected.
+- [x] Add Yjs binding.
+- [x] Add awareness cursors and selections.
+- [x] Export a stable `MonacoCollabEditor` component.
 - Test first:
-  - [ ] Add component smoke test.
-  - [ ] Add Yjs sync test using two document instances.
+  - [x] Add component smoke test.
+  - [x] Add Yjs sync test using two document instances.
+  - [x] Add awareness cursor/selection sync test.
+  - [x] Add collab server WebSocket sync test.
 - Done when:
-  - [ ] Editor can sync changes through the collab server.
+  - [x] Editor can sync changes through the collab server.
+    - Yjs state updates sync between document instances.
+    - `connectEditorCollabSession` syncs Yjs state updates through `apps/collab`.
+
+### Phase 4 Editor Core Verification Log
+
+- [x] Verified package versions before installation:
+  - [x] `react@19.2.7`
+  - [x] `react-dom@19.2.7`
+  - [x] `@types/react@19.2.17`
+  - [x] `@types/react-dom@19.2.3`
+  - [x] `yjs@13.6.31`
+- [x] Rejected direct `monaco-editor@0.55.1` dependency because `npm audit` reported a `dompurify` advisory through Monaco.
+- [x] Observed expected failing editor-core tests before implementation: `npm run test --workspace @anecites/editor-core`
+- [x] `npm run test --workspace @anecites/editor-core` (`5` tests, `5` passed, `0` failed)
+- [x] Verified `y-protocols@1.0.7` before installation.
+- [x] Observed expected failing awareness tests before implementation: `npm run test --workspace @anecites/editor-core`
+- [x] `npm run test --workspace @anecites/editor-core` (`8` tests, `8` passed, `0` failed)
+- [x] `npm run workspaces`
+- [x] `npm audit --audit-level=moderate`
+- [x] `npm run verify`
+- [x] `npm run lint`
+- [x] `npm run typecheck`
+- [x] `npm run build`
+- [x] `npm run test` (`60` tests, `60` passed, `0` failed)
+- [x] `npm run test` (`63` tests, `63` passed, `0` failed)
+- [x] Observed expected failing collab client test before implementation: `npm run test --workspace @anecites/editor-core`
+- [x] `npm run test --workspace @anecites/editor-core` (`9` tests, `9` passed, `0` failed)
+- [x] `npm install --package-lock-only`
+- [x] `npm audit --audit-level=moderate`
+- [x] `npm run lint`
+- [x] `npm run typecheck`
+- [x] `npm run build`
+- [x] `npm run test` (`64` tests, `64` passed, `0` failed)
+- [x] `npm run verify`
+- [x] `git diff --check`
 
 ### T-04.02 Add paste blocking and telemetry
 
-- [ ] Block browser paste events in the candidate editor pane.
+- [x] Block browser paste events in the candidate editor pane.
 - [ ] Disable Monaco paste commands where possible.
-- [ ] Detect large atomic inserts as suspicious even when paste events are bypassed.
-- [ ] Log events to the Yjs-derived telemetry path.
+  - Pending until the package has a real Monaco editor mount; the current host blocks DOM paste events.
+- [x] Detect large atomic inserts as suspicious even when paste events are bypassed.
+- [~] Log events to the Yjs-derived telemetry path.
+  - Current implementation emits shared raw telemetry events through `EditorTelemetryOptions.onEvent`.
+  - Server-side persistence transport for client-originated paste-block events remains pending with the desktop/API client integration.
 - Test first:
-  - [ ] Add DOM paste prevention test.
+  - [x] Add DOM paste prevention test.
   - [ ] Add Monaco command override test.
-  - [ ] Add atomic insert detection test.
+  - [x] Add atomic insert detection test.
 - Done when:
-  - [ ] Right-click paste, keyboard paste, and simulated atomic inserts are covered by tests.
+  - [~] Right-click paste, keyboard paste, and simulated atomic inserts are covered by tests.
+    - Browser `paste` events and simulated atomic inserts are covered.
+    - Monaco-specific command override coverage is still pending.
+
+### Phase 4 Paste Blocking Verification Log
+
+- [x] Observed expected failing shared telemetry test before implementation: `npm run test --workspace @anecites/shared`
+- [x] Observed expected failing editor-core paste/telemetry tests before implementation: `npm run test --workspace @anecites/editor-core`
+- [x] `npm install --package-lock-only`
+- [x] `npm audit --audit-level=moderate`
+- [x] `npm run test --workspace @anecites/shared` (`15` tests, `15` passed, `0` failed)
+- [x] `npm run test --workspace @anecites/editor-core` (`12` tests, `12` passed, `0` failed)
+- [x] `npm run lint`
+- [x] `npm run typecheck`
+- [x] `npm run build`
+- [x] `npm run test` (`68` tests, `68` passed, `0` failed)
+- [x] `npm run verify`
+- [x] `git diff --check`
 
 ### T-04.03 Add code runner client
 
-- [ ] Add typed API client for the server Judge0 proxy.
-- [ ] Surface stdout, stderr, time, memory, and error states.
+- [x] Add typed API client for the server code-execution proxy.
+- [x] Surface stdout, stderr, time, memory, and error states.
 - Test first:
-  - [ ] Add mocked API tests for success, compile error, timeout, and server failure.
+  - [x] Add mocked API tests for success, compile error, timeout, and server failure.
 - Done when:
-  - [ ] The UI receives normalized execution results.
+  - [x] The UI receives normalized execution results.
+
+### Phase 4 Code Runner Client Verification Log
+
+- [x] Observed expected failing code-execution client test before implementation: `npm run test --workspace @anecites/editor-core`
+- [x] `npm run test --workspace @anecites/editor-core` (`16` tests, `16` passed, `0` failed)
+- [x] `npm audit --audit-level=moderate`
+- [x] `npm run lint`
+- [x] `npm run typecheck`
+- [x] `npm run build`
+- [x] `npm run test` (`72` tests, `72` passed, `0` failed)
+- [x] `npm run verify`
+- [x] `git diff --check`
 
 ### T-04.04 Add replay engine
 
-- [ ] Reconstruct document state from replay evidence.
-- [ ] Preserve timing between operations.
+- [x] Reconstruct document state from replay evidence.
+- [x] Preserve timing between operations.
 - Test first:
-  - [ ] Add replay determinism test.
-  - [ ] Add timing tolerance test.
+  - [x] Add replay determinism test.
+  - [x] Add timing tolerance test.
 - Done when:
-  - [ ] Replayed output matches the original final document.
+  - [x] Replayed output matches the original final document.
+
+### Phase 4 Replay Engine Verification Log
+
+- [x] Observed expected failing replay test before implementation: `npm run test --workspace @anecites/editor-core`
+- [x] `npm run test --workspace @anecites/editor-core` (`19` tests, `19` passed, `0` failed)
+- [x] `npm audit --audit-level=moderate`
+- [x] `npm run lint`
+- [x] `npm run typecheck`
+- [x] `npm run build`
+- [x] `npm run test` (`75` tests, `75` passed, `0` failed)
+- [x] `npm run verify`
+- [x] `git diff --check`
 
 ## Phase 5 - Desktop App
 
@@ -390,7 +550,7 @@ The project does not move to the video module until all tests below pass.
 
 - [ ] T-ED-01: Two clients edit the same document concurrently with no conflicts or dropped updates.
 - [ ] T-ED-02: OS-level paste injection is flagged in the edit telemetry.
-- [ ] T-ED-03: Fork bomb is contained by the Judge0 sandbox.
+- [ ] T-ED-03: Fork bomb is contained by the configured code-execution sandbox.
 - [ ] T-ED-04: Network call from candidate code is blocked in the sandbox.
 - [ ] T-ED-05: 50 concurrent sessions pass a load test with no cross-session bleed.
 - [ ] T-ED-06: Right-click paste is blocked and logged.

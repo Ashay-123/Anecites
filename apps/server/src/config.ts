@@ -1,5 +1,6 @@
 export type NodeEnv = "development" | "test" | "production";
-export type Judge0Provider = "self-hosted" | "remote";
+export type CodeExecutionProviderName = "piston" | "judge0";
+export type Judge0Provider = "self-hosted";
 
 export interface ServerConfig {
   nodeEnv: NodeEnv;
@@ -9,11 +10,14 @@ export interface ServerConfig {
   databaseUrl: string;
   redisUrl: string;
   rabbitmqUrl: string;
+  codeExecutionProvider: CodeExecutionProviderName;
+  codeExecutionAllowedLanguageIds: readonly number[];
+  pistonBaseUrl: string;
+  pistonRequestTimeoutMs: number;
   judge0Provider: Judge0Provider;
   judge0BaseUrl: string;
   judge0AuthHeader: string | null;
   judge0AuthToken: string | null;
-  judge0RapidApiHost: string | null;
   judge0RequestTimeoutMs: number;
   judge0AllowedLanguageIds: readonly number[];
   authJwtSecret: string;
@@ -30,17 +34,20 @@ export interface ServerConfig {
 type EnvironmentInput = Record<string, string | undefined>;
 
 const NODE_ENVS = new Set(["development", "test", "production"]);
-const JUDGE0_PROVIDERS = new Set(["self-hosted", "remote"]);
+const CODE_EXECUTION_PROVIDERS = new Set(["piston", "judge0"]);
 const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 export function loadServerConfig(env: EnvironmentInput = process.env): ServerConfig {
   const nodeEnv = parseNodeEnv(env.NODE_ENV);
-  const judge0Provider = parseJudge0Provider(env.JUDGE0_PROVIDER);
+  const codeExecutionProvider = parseCodeExecutionProvider(env.CODE_EXECUTION_PROVIDER);
   const judge0AuthToken = parseOptionalString(env.JUDGE0_AUTHN_TOKEN);
-  const judge0AuthHeader =
-    parseOptionalHeaderName(env.JUDGE0_AUTHN_HEADER) ?? (judge0AuthToken ? defaultJudge0AuthHeader(judge0Provider) : null);
-  const judge0RapidApiHost = parseOptionalString(env.JUDGE0_RAPIDAPI_HOST);
+  const judge0AuthHeader = parseOptionalHeaderName(env.JUDGE0_AUTHN_HEADER) ?? (judge0AuthToken ? "X-Judge0-Token" : null);
   const judge0RequestTimeoutMs = parsePositiveInteger("JUDGE0_REQUEST_TIMEOUT_MS", env.JUDGE0_REQUEST_TIMEOUT_MS, 15_000, 60_000);
+  const pistonRequestTimeoutMs = parsePositiveInteger("PISTON_REQUEST_TIMEOUT_MS", env.PISTON_REQUEST_TIMEOUT_MS, 15_000, 60_000);
+  const codeExecutionAllowedLanguageIds = parseRequiredPositiveIntegerList(
+    "CODE_EXECUTION_ALLOWED_LANGUAGE_IDS",
+    env.CODE_EXECUTION_ALLOWED_LANGUAGE_IDS ?? env.JUDGE0_ALLOWED_LANGUAGE_IDS,
+  );
   const codeExecutionCpuTimeLimitSeconds = parsePositiveNumber(
     "CODE_EXECUTION_CPU_TIME_LIMIT_SECONDS",
     env.CODE_EXECUTION_CPU_TIME_LIMIT_SECONDS,
@@ -60,14 +67,6 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
     );
   }
 
-  if (judge0Provider === "remote" && !judge0AuthToken) {
-    throw new Error("JUDGE0_AUTHN_TOKEN is required when JUDGE0_PROVIDER is remote");
-  }
-
-  if (judge0Provider === "remote" && !judge0RapidApiHost) {
-    throw new Error("JUDGE0_RAPIDAPI_HOST is required when JUDGE0_PROVIDER is remote");
-  }
-
   return {
     nodeEnv,
     apiHost: env.API_HOST?.trim() || "0.0.0.0",
@@ -76,16 +75,16 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
     databaseUrl: parseRequiredUrl("DATABASE_URL", env.DATABASE_URL),
     redisUrl: parseRequiredUrl("REDIS_URL", env.REDIS_URL),
     rabbitmqUrl: parseRequiredUrl("RABBITMQ_URL", env.RABBITMQ_URL),
-    judge0Provider,
-    judge0BaseUrl: parseRequiredUrl("JUDGE0_BASE_URL", env.JUDGE0_BASE_URL),
+    codeExecutionProvider,
+    codeExecutionAllowedLanguageIds,
+    pistonBaseUrl: parseRequiredUrl("PISTON_BASE_URL", env.PISTON_BASE_URL ?? "http://127.0.0.1:2000"),
+    pistonRequestTimeoutMs,
+    judge0Provider: "self-hosted",
+    judge0BaseUrl: parseRequiredUrl("JUDGE0_BASE_URL", env.JUDGE0_BASE_URL ?? "http://localhost:2358"),
     judge0AuthHeader,
     judge0AuthToken,
-    judge0RapidApiHost,
     judge0RequestTimeoutMs,
-    judge0AllowedLanguageIds: parseRequiredPositiveIntegerList(
-      "JUDGE0_ALLOWED_LANGUAGE_IDS",
-      env.JUDGE0_ALLOWED_LANGUAGE_IDS,
-    ),
+    judge0AllowedLanguageIds: codeExecutionAllowedLanguageIds,
     authJwtSecret: parseJwtSecret(env.AUTH_JWT_SECRET),
     jsonBodyLimit: env.JSON_BODY_LIMIT?.trim() || "1mb",
     codeExecutionCpuTimeLimitSeconds,
@@ -116,16 +115,12 @@ function parseNodeEnv(value: string | undefined): NodeEnv {
   return nodeEnv as NodeEnv;
 }
 
-function parseJudge0Provider(value: string | undefined): Judge0Provider {
-  const provider = value?.trim() || "self-hosted";
-  if (!JUDGE0_PROVIDERS.has(provider)) {
-    throw new Error("JUDGE0_PROVIDER must be one of: self-hosted, remote");
+function parseCodeExecutionProvider(value: string | undefined): CodeExecutionProviderName {
+  const provider = value?.trim() || "piston";
+  if (!CODE_EXECUTION_PROVIDERS.has(provider)) {
+    throw new Error("CODE_EXECUTION_PROVIDER must be one of: piston, judge0");
   }
-  return provider as Judge0Provider;
-}
-
-function defaultJudge0AuthHeader(provider: Judge0Provider): string {
-  return provider === "remote" ? "X-RapidAPI-Key" : "X-Judge0-Token";
+  return provider as CodeExecutionProviderName;
 }
 
 function parsePort(value: string): number {

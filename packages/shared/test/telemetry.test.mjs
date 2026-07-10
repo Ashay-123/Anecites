@@ -5,6 +5,7 @@ import {
   EDITOR_EVENT_TYPES,
   TELEMETRY_STORAGE_POLICIES,
   createAtomicInsertTelemetryEvent,
+  createPasteBlockedTelemetryEvent,
   createRollingEditorTelemetryAggregate,
   shouldPersistTelemetryToPostgres,
 } from "../dist/index.js";
@@ -30,6 +31,18 @@ test("raw atomic insert telemetry is object-storage-only, not Postgres", () => {
   });
 
   assert.equal(event.type, EDITOR_EVENT_TYPES.atomicInsert);
+  assert.equal(event.storagePolicy, TELEMETRY_STORAGE_POLICIES.objectStorageOnly);
+  assert.equal(shouldPersistTelemetryToPostgres(event), false);
+});
+
+test("paste blocked telemetry is object-storage-only, not Postgres", () => {
+  const event = createPasteBlockedTelemetryEvent({
+    ...baseEvent,
+    source: "paste_event",
+  });
+
+  assert.equal(event.type, EDITOR_EVENT_TYPES.pasteBlocked);
+  assert.equal(event.kind, "raw");
   assert.equal(event.storagePolicy, TELEMETRY_STORAGE_POLICIES.objectStorageOnly);
   assert.equal(shouldPersistTelemetryToPostgres(event), false);
 });

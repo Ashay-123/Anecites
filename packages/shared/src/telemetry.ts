@@ -39,6 +39,20 @@ export interface AtomicInsertTelemetryEvent extends AtomicInsertTelemetryInput {
   storagePolicy: typeof TELEMETRY_STORAGE_POLICIES.objectStorageOnly;
 }
 
+export interface PasteBlockedTelemetryInput {
+  sessionId: string;
+  participantId: string;
+  documentId: string;
+  occurredAt: IsoDateTimeString;
+  source: "paste_event";
+}
+
+export interface PasteBlockedTelemetryEvent extends PasteBlockedTelemetryInput {
+  kind: "raw";
+  type: typeof EDITOR_EVENT_TYPES.pasteBlocked;
+  storagePolicy: typeof TELEMETRY_STORAGE_POLICIES.objectStorageOnly;
+}
+
 export interface RollingEditorTelemetryAggregateInput {
   sessionId: string;
   documentId: string;
@@ -59,6 +73,7 @@ export interface RollingEditorTelemetryAggregate extends RollingEditorTelemetryA
 
 export type EditorTelemetryRecord =
   | AtomicInsertTelemetryEvent
+  | PasteBlockedTelemetryEvent
   | RollingEditorTelemetryAggregate;
 
 export function createAtomicInsertTelemetryEvent(
@@ -74,6 +89,22 @@ export function createAtomicInsertTelemetryEvent(
     ...input,
     kind: "raw",
     type: EDITOR_EVENT_TYPES.atomicInsert,
+    storagePolicy: TELEMETRY_STORAGE_POLICIES.objectStorageOnly,
+  };
+}
+
+export function createPasteBlockedTelemetryEvent(
+  input: PasteBlockedTelemetryInput,
+): PasteBlockedTelemetryEvent {
+  assertNonEmptyString("sessionId", input.sessionId);
+  assertNonEmptyString("participantId", input.participantId);
+  assertNonEmptyString("documentId", input.documentId);
+  assertNonEmptyString("occurredAt", input.occurredAt);
+
+  return {
+    ...input,
+    kind: "raw",
+    type: EDITOR_EVENT_TYPES.pasteBlocked,
     storagePolicy: TELEMETRY_STORAGE_POLICIES.objectStorageOnly,
   };
 }

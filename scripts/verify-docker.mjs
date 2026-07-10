@@ -37,6 +37,8 @@ const result = spawnSync(
     "--profile",
     "infra",
     "--profile",
+    "piston",
+    "--profile",
     "judge0",
     "config",
     "--quiet",

@@ -1,5 +1,5 @@
 {
-  "name": "@anecites/server",
+  "name": "@anecites/collab",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -17,18 +17,19 @@
     "typecheck": "npm run build:deps && tsc -p tsconfig.json --noEmit",
     "lint": "npm run typecheck",
     "test": "npm run build && node --test --test-isolation=none test/*.test.mjs",
-    "smoke:piston": "npm run build && node scripts/smoke-piston.mjs",
-    "smoke:judge0": "npm run build && node scripts/smoke-judge0.mjs",
     "dev": "node dist/index.js"
   },
   "dependencies": {
     "@anecites/db": "0.0.0",
     "@anecites/shared": "0.0.0",
-    "express": "5.2.1",
-    "jose": "6.2.3"
+    "@aws-sdk/client-s3": "^3.1084.0",
+    "jose": "6.2.3",
+    "redis": "^6.1.0",
+    "ws": "8.21.0",
+    "yjs": "13.6.31"
   },
   "devDependencies": {
-    "@types/express": "5.0.6",
-    "@types/node": "24.13.2"
+    "@types/node": "24.13.2",
+    "@types/ws": "8.18.1"
   }
 }

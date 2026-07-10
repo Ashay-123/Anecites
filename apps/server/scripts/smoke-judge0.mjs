@@ -9,14 +9,9 @@ loadDotEnv(resolve(process.cwd(), ".env"));
 
 const smokeOutput = "judge0-smoke-ok";
 const authJwtSecret = process.env.AUTH_JWT_SECRET ?? "local_smoke_auth_secret_minimum_32_characters";
-const judge0Provider = process.env.JUDGE0_PROVIDER ?? "self-hosted";
-const judge0BaseUrl = (
-  process.env.JUDGE0_BASE_URL ?? (judge0Provider === "remote" ? "https://judge0-ce.p.rapidapi.com" : "http://localhost:2358")
-).replace(/\/$/, "");
-const judge0AuthHeader = process.env.JUDGE0_AUTHN_HEADER ?? (judge0Provider === "remote" ? "X-RapidAPI-Key" : "X-Judge0-Token");
-const judge0AuthToken =
-  process.env.JUDGE0_AUTHN_TOKEN ?? (judge0Provider === "remote" ? "" : "local_judge0_dev_token_change_me");
-const judge0RapidApiHost = process.env.JUDGE0_RAPIDAPI_HOST ?? "";
+const judge0BaseUrl = (process.env.JUDGE0_BASE_URL ?? "http://localhost:2358").replace(/\/$/, "");
+const judge0AuthHeader = process.env.JUDGE0_AUTHN_HEADER ?? "X-Judge0-Token";
+const judge0AuthToken = process.env.JUDGE0_AUTHN_TOKEN ?? "local_judge0_dev_token_change_me";
 const judge0RequestTimeoutMs = process.env.JUDGE0_REQUEST_TIMEOUT_MS ?? "15000";
 
 await main().catch((error) => {
@@ -35,13 +30,12 @@ async function main() {
       process.env.DATABASE_URL ?? "postgresql://anecites:anecites_dev_password@localhost:5432/anecites",
     REDIS_URL: process.env.REDIS_URL ?? "redis://localhost:6379",
     RABBITMQ_URL: process.env.RABBITMQ_URL ?? "amqp://anecites:anecites_dev_password@localhost:5672",
-    JUDGE0_PROVIDER: judge0Provider,
+    CODE_EXECUTION_PROVIDER: "judge0",
+    CODE_EXECUTION_ALLOWED_LANGUAGE_IDS: String(smokeLanguage.id),
     JUDGE0_BASE_URL: judge0BaseUrl,
     JUDGE0_AUTHN_HEADER: judge0AuthHeader,
     JUDGE0_AUTHN_TOKEN: judge0AuthToken,
-    JUDGE0_RAPIDAPI_HOST: judge0RapidApiHost,
     JUDGE0_REQUEST_TIMEOUT_MS: judge0RequestTimeoutMs,
-    JUDGE0_ALLOWED_LANGUAGE_IDS: String(smokeLanguage.id),
     AUTH_JWT_SECRET: authJwtSecret,
   });
 
@@ -84,7 +78,7 @@ async function main() {
       throw new Error(`Unexpected Judge0 smoke result: ${JSON.stringify(body.execution)}`);
     }
 
-    console.log(`Judge0 proxy smoke passed with language ${smokeLanguage.id} (${smokeLanguage.name}).`);
+    console.log(`Judge0 smoke passed with language ${smokeLanguage.id} (${smokeLanguage.name}).`);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -163,10 +157,6 @@ function judge0Headers() {
 
   if (judge0AuthHeader && judge0AuthToken) {
     headers[judge0AuthHeader] = judge0AuthToken;
-  }
-
-  if (judge0RapidApiHost) {
-    headers["X-RapidAPI-Host"] = judge0RapidApiHost;
   }
 
   return headers;

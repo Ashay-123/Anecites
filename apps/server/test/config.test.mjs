@@ -11,11 +11,13 @@ const validEnv = {
   DATABASE_URL: "postgresql://anecites:anecites_dev_password@localhost:5432/anecites",
   REDIS_URL: "redis://localhost:6379",
   RABBITMQ_URL: "amqp://anecites:anecites_dev_password@localhost:5672",
-  JUDGE0_PROVIDER: "self-hosted",
+  CODE_EXECUTION_PROVIDER: "piston",
+  CODE_EXECUTION_ALLOWED_LANGUAGE_IDS: "63,71",
+  PISTON_BASE_URL: "http://127.0.0.1:2000",
+  PISTON_REQUEST_TIMEOUT_MS: "15000",
   JUDGE0_BASE_URL: "http://localhost:2358",
   JUDGE0_AUTHN_HEADER: "X-Judge0-Token",
   JUDGE0_AUTHN_TOKEN: "test-judge0-token",
-  JUDGE0_RAPIDAPI_HOST: "",
   JUDGE0_REQUEST_TIMEOUT_MS: "15000",
   JUDGE0_ALLOWED_LANGUAGE_IDS: "63,71",
   AUTH_JWT_SECRET: "test_auth_secret_minimum_32_characters",
@@ -30,11 +32,14 @@ test("loadServerConfig accepts the required API server environment", () => {
     databaseUrl: validEnv.DATABASE_URL,
     redisUrl: validEnv.REDIS_URL,
     rabbitmqUrl: validEnv.RABBITMQ_URL,
+    codeExecutionProvider: "piston",
+    codeExecutionAllowedLanguageIds: [63, 71],
+    pistonBaseUrl: validEnv.PISTON_BASE_URL,
+    pistonRequestTimeoutMs: 15000,
     judge0Provider: "self-hosted",
     judge0BaseUrl: validEnv.JUDGE0_BASE_URL,
     judge0AuthHeader: validEnv.JUDGE0_AUTHN_HEADER,
     judge0AuthToken: validEnv.JUDGE0_AUTHN_TOKEN,
-    judge0RapidApiHost: null,
     judge0RequestTimeoutMs: 15000,
     judge0AllowedLanguageIds: [63, 71],
     authJwtSecret: validEnv.AUTH_JWT_SECRET,
@@ -59,42 +64,39 @@ test("loadServerConfig fails closed when required values are missing", () => {
   );
 });
 
-test("loadServerConfig fails closed when no Judge0 languages are allowed", () => {
+test("loadServerConfig fails closed when no code execution languages are allowed", () => {
   assert.throws(
-    () => loadServerConfig({ ...validEnv, JUDGE0_ALLOWED_LANGUAGE_IDS: "" }),
-    /JUDGE0_ALLOWED_LANGUAGE_IDS is required/,
+    () => loadServerConfig({ ...validEnv, CODE_EXECUTION_ALLOWED_LANGUAGE_IDS: "" }),
+    /CODE_EXECUTION_ALLOWED_LANGUAGE_IDS is required/,
   );
 });
 
-test("loadServerConfig validates remote Judge0 provider settings", () => {
+test("loadServerConfig validates code execution provider settings", () => {
   assert.throws(
     () =>
       loadServerConfig({
         ...validEnv,
-        JUDGE0_PROVIDER: "remote",
-        JUDGE0_AUTHN_TOKEN: "",
+        CODE_EXECUTION_PROVIDER: "invalid",
       }),
-    /JUDGE0_AUTHN_TOKEN is required/,
+    /CODE_EXECUTION_PROVIDER must be/,
   );
 
   assert.throws(
     () =>
       loadServerConfig({
         ...validEnv,
-        JUDGE0_PROVIDER: "remote",
-        JUDGE0_AUTHN_TOKEN: "test-key",
-        JUDGE0_RAPIDAPI_HOST: "",
+        PISTON_BASE_URL: "not-a-url",
       }),
-    /JUDGE0_RAPIDAPI_HOST is required/,
+    /PISTON_BASE_URL must be a valid URL/,
   );
 
   assert.throws(
     () =>
       loadServerConfig({
         ...validEnv,
-        JUDGE0_PROVIDER: "invalid",
+        PISTON_REQUEST_TIMEOUT_MS: "60001",
       }),
-    /JUDGE0_PROVIDER must be/,
+    /PISTON_REQUEST_TIMEOUT_MS must be less than or equal to 60000/,
   );
 });
 

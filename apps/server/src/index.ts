@@ -7,8 +7,9 @@ import { consoleLogger } from "./logger.js";
 
 export { createApp } from "./app.js";
 export { requireAuth, type AuthenticatedPrincipal } from "./auth.js";
-export { createCodeExecutionRouter, type FetchLike } from "./code-executions.js";
-export { loadServerConfig, type ServerConfig, type NodeEnv } from "./config.js";
+export { createCodeExecutionRouter } from "./code-executions.js";
+export { type FetchLike } from "./code-execution-provider.js";
+export { loadServerConfig, type CodeExecutionProviderName, type ServerConfig, type NodeEnv } from "./config.js";
 export { HttpError } from "./http-error.js";
 export { consoleLogger, type Logger } from "./logger.js";
 export { createSessionRouter } from "./sessions.js";

@@ -7,7 +7,8 @@ import express, {
 import { createPrismaClient, type PrismaClient } from "@anecites/db";
 
 import { requireAuth } from "./auth.js";
-import { createCodeExecutionRouter, type FetchLike } from "./code-executions.js";
+import { type FetchLike } from "./code-execution-provider.js";
+import { createCodeExecutionRouter } from "./code-executions.js";
 import { type ServerConfig } from "./config.js";
 import { isHttpError } from "./http-error.js";
 import { consoleLogger, type Logger } from "./logger.js";

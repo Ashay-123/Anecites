@@ -1,0 +1,166 @@
+export interface CodeExecutionClientOptions {
+  baseUrl: string;
+  token: string;
+  fetch?: FetchLike;
+}
+
+export interface CodeExecutionSubmission {
+  languageId: number;
+  sourceCode: string;
+  stdin?: string;
+}
+
+export interface CodeExecutionStatus {
+  id: number;
+  description: string;
+}
+
+export interface CodeExecutionResult {
+  token: string | null;
+  status: CodeExecutionStatus;
+  stdout: string | null;
+  stderr: string | null;
+  compileOutput: string | null;
+  message: string | null;
+  timeSeconds: number | null;
+  memoryKb: number | null;
+}
+
+export interface CodeExecutionClient {
+  execute(submission: CodeExecutionSubmission): Promise<CodeExecutionResult>;
+}
+
+export interface CodeExecutionProxyErrorBody {
+  error: {
+    code: string;
+    message: string;
+  };
+}
+
+type FetchLike = (url: string | URL, init?: RequestInit) => Promise<Response>;
+
+export class CodeExecutionClientError extends Error {
+  readonly status: number;
+  readonly code: string;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.name = "CodeExecutionClientError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+export function createCodeExecutionClient(
+  options: CodeExecutionClientOptions,
+): CodeExecutionClient {
+  const baseUrl = requireNonEmptyString("baseUrl", options.baseUrl);
+  const token = requireNonEmptyString("token", options.token);
+  const fetchImpl = options.fetch ?? globalThis.fetch;
+
+  if (!fetchImpl) {
+    throw new Error("fetch is required when global fetch is unavailable");
+  }
+
+  return {
+    async execute(submission) {
+      const response = await fetchImpl(new URL("/code-executions", baseUrl), {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(normalizeSubmission(submission)),
+      });
+
+      const body: unknown = await response.json();
+
+      if (!response.ok) {
+        throw toClientError(response.status, body);
+      }
+
+      return parseCodeExecutionResponse(body);
+    },
+  };
+}
+
+function normalizeSubmission(submission: CodeExecutionSubmission): Required<CodeExecutionSubmission> {
+  if (!Number.isSafeInteger(submission.languageId) || submission.languageId < 1) {
+    throw new Error("languageId must be a positive integer");
+  }
+
+  return {
+    languageId: submission.languageId,
+    sourceCode: requireNonEmptyString("sourceCode", submission.sourceCode),
+    stdin: submission.stdin ?? "",
+  };
+}
+
+function toClientError(status: number, body: unknown): CodeExecutionClientError {
+  if (isProxyErrorBody(body)) {
+    return new CodeExecutionClientError(status, body.error.code, body.error.message);
+  }
+
+  return new CodeExecutionClientError(
+    status,
+    "CODE_EXECUTION_PROXY_ERROR",
+    "Code execution proxy request failed",
+  );
+}
+
+function parseCodeExecutionResponse(body: unknown): CodeExecutionResult {
+  if (!isRecord(body) || !("execution" in body) || !isCodeExecutionResult(body.execution)) {
+    throw new Error("Code execution proxy returned an invalid response");
+  }
+
+  return body.execution;
+}
+
+function isProxyErrorBody(value: unknown): value is CodeExecutionProxyErrorBody {
+  if (!isRecord(value) || !isRecord(value.error)) {
+    return false;
+  }
+
+  return typeof value.error.code === "string" && typeof value.error.message === "string";
+}
+
+function isCodeExecutionResult(value: unknown): value is CodeExecutionResult {
+  if (!isRecord(value) || !isRecord(value.status)) {
+    return false;
+  }
+
+  return (
+    isNullableString(value.token) &&
+    typeof value.status.id === "number" &&
+    typeof value.status.description === "string" &&
+    isNullableString(value.stdout) &&
+    isNullableString(value.stderr) &&
+    isNullableString(value.compileOutput) &&
+    isNullableString(value.message) &&
+    isNullableNumber(value.timeSeconds) &&
+    isNullableNumber(value.memoryKb)
+  );
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isNullableNumber(value: unknown): value is number | null {
+  return value === null || typeof value === "number";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireNonEmptyString(name: string, value: string): string {
+  const normalized = value.trim();
+
+  if (normalized.length === 0) {
+    throw new Error(`${name} must be a non-empty string`);
+  }
+
+  return normalized;
+}

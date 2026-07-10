@@ -5,7 +5,7 @@ import { SignJWT } from "jose";
 import { createApp, loadServerConfig } from "../dist/index.js";
 
 const authJwtSecret = "test_auth_secret_minimum_32_characters";
-const testRunId = `judge0-${Date.now()}`;
+const testRunId = `code-execution-${Date.now()}`;
 
 function testConfig(overrides = {}) {
   return loadServerConfig({
@@ -16,11 +16,13 @@ function testConfig(overrides = {}) {
     DATABASE_URL: "postgresql://anecites:anecites_dev_password@localhost:5432/anecites",
     REDIS_URL: "redis://localhost:6379",
     RABBITMQ_URL: "amqp://anecites:anecites_dev_password@localhost:5672",
-    JUDGE0_PROVIDER: "self-hosted",
+    CODE_EXECUTION_PROVIDER: "judge0",
+    CODE_EXECUTION_ALLOWED_LANGUAGE_IDS: "63,71",
+    PISTON_BASE_URL: "http://127.0.0.1:2000",
+    PISTON_REQUEST_TIMEOUT_MS: "15000",
     JUDGE0_BASE_URL: "http://judge0.test",
     JUDGE0_AUTHN_HEADER: "X-Judge0-Token",
     JUDGE0_AUTHN_TOKEN: "test-judge0-token",
-    JUDGE0_RAPIDAPI_HOST: "",
     JUDGE0_REQUEST_TIMEOUT_MS: "15000",
     JUDGE0_ALLOWED_LANGUAGE_IDS: "63,71",
     AUTH_JWT_SECRET: authJwtSecret,
@@ -168,48 +170,7 @@ test("POST /code-executions submits allowed code to Judge0 with enforced limits"
   });
 });
 
-test("POST /code-executions sends RapidAPI headers for remote Judge0", async (t) => {
-  const fakeJudge0 = createFakeJudge0Fetch({
-    token: "submission-token",
-    stdout: "ok\n",
-    stderr: null,
-    compile_output: null,
-    message: null,
-    time: "0.012",
-    memory: 1024,
-    status: {
-      id: 3,
-      description: "Accepted",
-    },
-  });
-  const app = createApp(testConfig({
-    JUDGE0_PROVIDER: "remote",
-    JUDGE0_RAPIDAPI_HOST: "judge0-ce.p.rapidapi.com",
-    JUDGE0_AUTHN_HEADER: "X-RapidAPI-Key",
-    JUDGE0_AUTHN_TOKEN: "test-rapid-key",
-  }), {
-    logger: quietLogger(),
-    fetch: fakeJudge0.fetchImpl,
-  });
-  const server = await listen(app);
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-
-  const result = await jsonRequest(server, "/code-executions", {
-    method: "POST",
-    headers: await authorizationHeader(),
-    body: JSON.stringify({
-      languageId: 63,
-      sourceCode: "console.log('ok')",
-    }),
-  });
-
-  assert.equal(result.response.status, 201);
-  assert.equal(fakeJudge0.calls.length, 1);
-  assert.equal(fakeJudge0.calls[0].headers.get("X-RapidAPI-Key"), "test-rapid-key");
-  assert.equal(fakeJudge0.calls[0].headers.get("X-RapidAPI-Host"), "judge0-ce.p.rapidapi.com");
-});
-
-test("POST /code-executions does not send RapidAPI host for self-hosted Judge0", async (t) => {
+test("POST /code-executions sends only self-hosted auth headers for Judge0", async (t) => {
   const fakeJudge0 = createFakeJudge0Fetch({
     token: "submission-token",
     stdout: "ok\n",
@@ -242,7 +203,6 @@ test("POST /code-executions does not send RapidAPI host for self-hosted Judge0",
   assert.equal(result.response.status, 201);
   assert.equal(fakeJudge0.calls.length, 1);
   assert.equal(fakeJudge0.calls[0].headers.get("X-Judge0-Token"), "test-judge0-token");
-  assert.equal(fakeJudge0.calls[0].headers.get("X-RapidAPI-Host"), null);
 });
 
 test("POST /code-executions rejects unauthenticated requests before Judge0 is called", async (t) => {
@@ -341,7 +301,7 @@ test("POST /code-executions fails closed on Judge0 upstream errors and oversized
   assert.equal(upstreamError.response.status, 502);
   assert.deepEqual(upstreamError.body, {
     error: {
-      code: "JUDGE0_UPSTREAM_ERROR",
+      code: "CODE_EXECUTION_UPSTREAM_ERROR",
       message: "Code execution service failed",
     },
   });
@@ -377,7 +337,7 @@ test("POST /code-executions fails closed on Judge0 upstream errors and oversized
   assert.equal(largeOutput.response.status, 502);
   assert.deepEqual(largeOutput.body, {
     error: {
-      code: "JUDGE0_OUTPUT_TOO_LARGE",
+      code: "CODE_EXECUTION_OUTPUT_TOO_LARGE",
       message: "Code execution output exceeded the configured limit",
     },
   });

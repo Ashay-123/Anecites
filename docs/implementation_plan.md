@@ -12,7 +12,7 @@ This plan synthesizes the provided implementation plan, Phase 1 task list, and c
 | Reviewer/admin dashboard | Vite + React web app |
 | Video/WebRTC | LiveKit Cloud for development, self-hosted LiveKit for production |
 | Database | PostgreSQL with Prisma ORM and Prisma Migrate |
-| Code execution | Self-hosted Judge0, isolated from the main network and database |
+| Code execution | Self-hosted Piston for development; optional self-hosted Judge0 remains available for future Linux testing |
 | Queues and streams | RabbitMQ for discrete jobs, Redis Streams for continuous telemetry |
 | Object storage | S3-compatible storage, MinIO locally |
 | Native fallback | None for v1; do not add Electron unless the Tauri path fails for a verified reason |
@@ -39,9 +39,9 @@ These corrections must be treated as requirements, not optional refinements.
    - Use Redis Streams for continuous telemetry.
    - Use RabbitMQ for discrete jobs such as code execution requests, media-processing jobs, and risk-summary jobs.
 
-5. Do not trust Docker configuration alone for Judge0 isolation.
-   - Judge0 must be on a separate network segment with no route to app Postgres, Redis, RabbitMQ, MinIO, or internal APIs.
-   - Add gVisor or Firecracker as a hardening layer before production candidate code runs.
+5. Do not trust Docker configuration alone for code-execution isolation.
+   - Piston or Judge0 must be reachable only from the backend and must not route to app Postgres, Redis, RabbitMQ, MinIO, or internal APIs.
+   - Add gVisor, Firecracker, or an equivalent sandbox hardening layer before production candidate code runs.
 
 6. Do not alert on a single raw signal.
    - Risk output must be composite, timestamped, explainable, and human-reviewed.
@@ -65,7 +65,7 @@ Backend
   Yjs collaboration server
   Risk engine
   Media inference workers
-  Judge0 proxy
+  Code execution proxy
 
 Data and infra
   Postgres: sessions, users, summaries, object references
@@ -73,7 +73,8 @@ Data and infra
   RabbitMQ: discrete background jobs
   MinIO/S3: recordings, replay logs, evidence artifacts
   LiveKit: calls, screen share, egress samples
-  Judge0 isolated stack: separate database, Redis, and workers
+  Piston isolated stack: self-hosted execution API with persistent runtime packages
+  Judge0 isolated stack: optional future Linux-only provider with separate database, Redis, and workers
 
 Reviewer Dashboard
   Session list
@@ -156,7 +157,7 @@ Deliverables:
   - health endpoint
   - auth middleware
   - session routes
-  - Judge0 proxy
+  - code execution provider proxy
   - WebSocket/event forwarding boundary if needed
 
 Test-first checks:
@@ -164,19 +165,23 @@ Test-first checks:
 - Invalid environment test.
 - Auth rejection and authorization tests.
 - Session state-machine route tests.
-- Judge0 proxy validation tests.
+- code execution provider validation tests.
 
 Implementation notes:
-- Do not expose Judge0 directly to clients.
+- Do not expose Piston or Judge0 directly to clients.
 - Apply body-size limits and output-size limits.
-- The server Judge0 proxy must enforce a configured numeric language allowlist because language IDs are deployment-specific.
-- The current synchronous proxy uses Judge0 `wait=true`; keep local `docker/judge0.conf` aligned with `ENABLE_WAIT_RESULT=true`. If a managed Judge0 host disables `wait=true`, this must become an async submit-and-poll flow instead of pretending synchronous execution is available.
+- The server code-execution proxy must enforce a configured numeric language allowlist because clients continue sending numeric language IDs.
+- Piston is the default provider for Windows development because Docker Desktop uses cgroup v2 and Piston is designed for that host mode.
+- Runtime versions must be pinned for reproducible interviews. The current Piston mapping targets Node.js `20.11.1` and Python `3.12.0`.
+- Judge0 remains an optional future provider for dedicated Linux hosts. Do not use Judge0 RapidAPI as the default and do not require paid API credentials.
 - Treat the planned NextAuth/Auth.js choice as unconfirmed for a Vite + Express architecture until verified. If it does not fit cleanly, use an OIDC/JWT boundary or move the web app to a framework with first-class support.
 
 Current status:
-- `apps/server` has a protected `POST /code-executions` proxy that validates input, sends constrained submissions to Judge0, and normalizes `stdout`, `stderr`, `time`, and `memory`.
-- Normal tests use an injected fetch client so validation and upstream-failure behavior are deterministic.
-- Local Judge0 smoke is implemented as `npm run smoke:judge0 --workspace @anecites/server`. The API is reachable on `http://127.0.0.1:2358`, and the Judge0 containers run in privileged mode as required by the upstream compose file. Execution is still blocked on Docker Desktop because the runtime exposes cgroup v2 only while Judge0 1.13.1 expects cgroup v1 memory controls.
+- `apps/server` has a protected `POST /code-executions` route that validates input, selects a configured execution provider, sends constrained submissions, and normalizes `stdout`, `stderr`, status, and optional timing/memory fields.
+- `CODE_EXECUTION_PROVIDER=piston` is the default. `CODE_EXECUTION_PROVIDER=judge0` remains available for the optional self-hosted Judge0 path.
+- Normal tests use an injected fetch client so validation, provider mapping, timeout handling, upstream-failure behavior, invalid responses, and oversized output are deterministic.
+- Piston smoke is implemented as `npm run smoke:piston --workspace @anecites/server`. It requires the `piston` Docker profile to be running and Node.js `20.11.1` or the configured runtime to be installed in Piston.
+- Local Judge0 smoke remains optional as `npm run smoke:judge0 --workspace @anecites/server`; it is not part of normal Windows development.
 
 ## Phase 3 - Collaboration Server
 
@@ -212,7 +217,7 @@ Deliverables:
   - awareness cursors
   - paste blocker
   - atomic insert detector
-  - Judge0 API client
+  - code execution API client
   - replay engine
 
 Test-first checks:
@@ -258,7 +263,7 @@ Goal: prove the editor, collaboration, telemetry, and sandbox assumptions before
 Required passing tests:
 - T-ED-01: Two clients edit the same document concurrently.
 - T-ED-02: OS-level paste injection is flagged in telemetry.
-- T-ED-03: Fork bomb is contained by Judge0.
+- T-ED-03: Fork bomb is contained by the configured code-execution provider.
 - T-ED-04: Network call is blocked in the sandbox.
 - T-ED-05: 50 concurrent sessions load test passes.
 - T-ED-06: Right-click paste is blocked and logged.
@@ -268,7 +273,7 @@ Exit criteria:
 - All Module 1 tests pass.
 - The root `test`, `typecheck`, `lint`, and `build` commands pass.
 - No high-frequency raw telemetry is stored directly in Postgres.
-- Judge0 cannot route to main app services.
+- The configured code-execution provider cannot route to main app services.
 
 ## Later Modules
 
@@ -312,6 +317,6 @@ Gate:
 - The existing documentation still needs a consistency pass before code implementation if it conflicts with this plan.
 - Auth framework fit is not confirmed from the current codebase.
 - Package versions are not confirmed from the current codebase.
-- Judge0 hardening details require a dedicated security review before production use.
-- Local Judge0 starts and publishes the API port, but its sandbox runtime currently fails with `Failed to create control group /sys/fs/cgroup/memory/box-*`; Docker Desktop reports `CgroupVersion=2`. This must be resolved before Module 1 fork-bomb and network-block tests can be marked complete.
+- Piston hardening details require a dedicated security review before production use. Piston runs as a privileged container and is acceptable for local development, not a complete production trust boundary.
+- Local Judge0 starts and publishes the API port, but its sandbox runtime fails on Docker Desktop cgroup v2. Keep Judge0 only as an optional future provider for a dedicated Linux host.
 - Biometric processing, recording retention, and adverse-action workflows require legal review before pilot deployment.
