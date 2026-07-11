@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@anecites/editor-core": "0.0.0",
+    "@anecites/shared": "0.0.0",
     "@tauri-apps/api": "2.11.1",
     "livekit-client": "2.20.1",
     "react": "19.2.7",

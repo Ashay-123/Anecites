@@ -84,6 +84,22 @@ Every credible product in this space treats detection as a probability score acr
 
 Do not skip a test gate to start the next module early — each module's test gate specifically validates the assumption the next module is built on (e.g., the risk engine in step 3 is only meaningful if the event log from step 1 and the native helper signals from step 2 are already reliable).
 
-## 6. Reference implementations worth studying directly (not necessarily reusing wholesale)
+## 6. Release hardening gates
+
+These are explicit release gates, not optional polish.
+
+### Accessibility
+
+Before pilot use, the built desktop and reviewer flows must be reviewed for keyboard-only operation, screen-reader semantics, visible focus, dialog focus trapping, contrast, captions/accommodations, and reduced-motion behavior. Monitoring outputs need an accommodation path for candidates whose disability, camera setup, eye contact, speech, or movement patterns can affect face, gaze, audio, or native signals.
+
+### Sandbox and service isolation
+
+The development Piston profile is intentionally localhost-bound but privileged. That is not a production sandbox. Production candidate code execution requires a reviewed isolation layer such as gVisor, Firecracker, or an equivalent boundary; blocked outbound networking; bounded CPU, memory, process, file, wall-time, and output limits; and no network path to Postgres, Redis, RabbitMQ, MinIO/S3, LiveKit, media workers, or internal APIs. Code execution and media inference workers must remain separate trust zones.
+
+### Signing and updates
+
+The Tauri desktop app is not production-distributable until release engineering verifies platform signing, release provenance, authenticated update manifests, rollback, and signing-key rotation. Unsigned or unauthenticated update paths are development-only.
+
+## 7. Reference implementations worth studying directly (not necessarily reusing wholesale)
 - **Safe Exam Browser** (OSS, MPL, ETH Zurich) — lockdown browser architecture + consent-dialog pattern
 - **Vysper** (public OSS overlay clone) — study its evasion techniques to build detection signatures against, the same way security teams study public malware for defense

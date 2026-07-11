@@ -12,6 +12,35 @@ export interface CreateRiskSummaryRequest {
   rationale?: string | null;
 }
 
+export interface ListRiskSummariesRequest {
+  sessionId: string;
+  reviewStatus?: RiskSummaryReviewStatus;
+}
+
+export interface UpdateRiskSummaryReviewRequest {
+  sessionId: string;
+  riskSummaryId: string;
+  reviewerId: string;
+  reviewStatus: RiskSummaryReviewStatus;
+  reviewedAt?: string | Date;
+}
+
+export type RiskSummaryReviewStatus = (typeof RISK_SUMMARY_REVIEW_STATUSES)[number];
+
+export const RISK_SUMMARY_REVIEW_STATUSES = [
+  "pending_review",
+  "confirmed",
+  "dismissed",
+  "needs_more_context",
+] as const;
+
+const API_TO_DB_REVIEW_STATUS = {
+  pending_review: "PENDING_REVIEW",
+  confirmed: "CONFIRMED",
+  dismissed: "DISMISSED",
+  needs_more_context: "NEEDS_MORE_CONTEXT",
+} as const satisfies Record<RiskSummaryReviewStatus, string>;
+
 const riskSummarySelect = {
   id: true,
   sessionId: true,
@@ -22,6 +51,8 @@ const riskSummarySelect = {
   correlatedSignalCount: true,
   humanReviewRequired: true,
   reviewStatus: true,
+  reviewerId: true,
+  reviewedAt: true,
   rationale: true,
   signalBreakdown: true,
   createdAt: true,
@@ -77,6 +108,100 @@ export async function createRiskSummary(prisma: PrismaClient, request: CreateRis
   return serializeRiskSummary(riskSummary);
 }
 
+export async function listRiskSummaries(prisma: PrismaClient, request: ListRiskSummariesRequest) {
+  const sessionId = requireNonEmptyString(request.sessionId, "sessionId");
+  const existingSession = await prisma.session.findUnique({
+    where: {
+      id: sessionId,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!existingSession) {
+    throw new HttpError(404, "SESSION_NOT_FOUND", "Session not found");
+  }
+
+  const riskSummaries = await prisma.riskSummary.findMany({
+    where: {
+      sessionId,
+      ...(request.reviewStatus ? { reviewStatus: API_TO_DB_REVIEW_STATUS[request.reviewStatus] } : {}),
+    },
+    orderBy: [
+      {
+        windowStartedAt: "desc",
+      },
+      {
+        createdAt: "desc",
+      },
+      {
+        id: "asc",
+      },
+    ],
+    select: riskSummarySelect,
+  });
+
+  return riskSummaries.map(serializeRiskSummary);
+}
+
+export async function updateRiskSummaryReview(prisma: PrismaClient, request: UpdateRiskSummaryReviewRequest) {
+  const sessionId = requireNonEmptyString(request.sessionId, "sessionId");
+  const riskSummaryId = requireNonEmptyString(request.riskSummaryId, "riskSummaryId");
+  const reviewerId = requireNonEmptyString(request.reviewerId, "reviewerId");
+  const reviewedAt = request.reviewedAt ? parseDate(request.reviewedAt, "reviewedAt") : new Date();
+
+  const existingRiskSummary = await prisma.riskSummary.findUnique({
+    where: {
+      id: riskSummaryId,
+    },
+    select: {
+      id: true,
+      sessionId: true,
+    },
+  });
+
+  if (!existingRiskSummary || existingRiskSummary.sessionId !== sessionId) {
+    throw new HttpError(404, "RISK_SUMMARY_NOT_FOUND", "Risk summary not found");
+  }
+
+  const reviewer = await prisma.user.findUnique({
+    where: {
+      id: reviewerId,
+    },
+    select: {
+      id: true,
+      role: true,
+    },
+  });
+
+  if (!reviewer || !isPrivilegedDbUserRole(reviewer.role)) {
+    throw new HttpError(403, "FORBIDDEN", "Reviewer access is required");
+  }
+
+  const riskSummary = await prisma.riskSummary.update({
+    where: {
+      id: riskSummaryId,
+    },
+    data: {
+      reviewStatus: API_TO_DB_REVIEW_STATUS[request.reviewStatus],
+      reviewerId,
+      reviewedAt,
+    },
+    select: riskSummarySelect,
+  });
+
+  return serializeRiskSummary(riskSummary);
+}
+
+export function isRiskSummaryReviewStatus(value: unknown): value is RiskSummaryReviewStatus {
+  return typeof value === "string" && (RISK_SUMMARY_REVIEW_STATUSES as readonly string[]).includes(value);
+}
+
+function isPrivilegedDbUserRole(role: string): boolean {
+  return role === "INTERVIEWER" || role === "REVIEWER" || role === "ADMIN";
+}
+
 function buildCompositeRiskSummaryOrThrow(signals: readonly RiskSignalInput[]) {
   try {
     return buildCompositeRiskSummary(signals);
@@ -100,11 +225,17 @@ function serializeRiskSummary(riskSummary: RiskSummaryRecord) {
     correlatedSignalCount: riskSummary.correlatedSignalCount,
     humanReviewRequired: riskSummary.humanReviewRequired,
     reviewStatus: riskSummary.reviewStatus.toLowerCase(),
+    reviewerId: riskSummary.reviewerId,
+    reviewedAt: serializeOptionalDate(riskSummary.reviewedAt),
     rationale: riskSummary.rationale,
     signalBreakdown: riskSummary.signalBreakdown,
     createdAt: riskSummary.createdAt.toISOString(),
     updatedAt: riskSummary.updatedAt.toISOString(),
   };
+}
+
+function serializeOptionalDate(value: Date | null): string | null {
+  return value ? value.toISOString() : null;
 }
 
 function parseDate(value: string | Date, fieldName: string): Date {

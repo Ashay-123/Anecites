@@ -96,8 +96,64 @@ Shared infra: auth, session/data plane (Postgres/Redis/S3), event bus (Kafka/Rab
 - Documented human-review + appeals process
 - Accessibility path for candidates with conditions affecting gaze/eye contact/camera framing
 
+### Required legal/privacy release gate
+
+Anecites is not pilot-ready until qualified legal/privacy counsel approves the deployed workflow for every launch jurisdiction. Engineering tests only verify implementation behavior; they do not establish legal compliance.
+
+Counsel approval is required for:
+- candidate notice and affirmative consent copy before recording, native monitoring, and biometric/media inference
+- recording, replay, telemetry, risk-summary, and evidence retention/deletion windows
+- biometric and sensitive-data processing for face, gaze, voice, diarization, and native-monitoring signals
+- reviewer access controls, audit trail expectations, and candidate appeal/dispute process
+- adverse-action workflow language, including the rule that risk summaries are evidence for human review and are not automated employment or interview decisions
+
+No release note, UI copy, or reviewer workflow may claim that Anecites is legally compliant, bias-free, or determinative based only on engineering verification.
+
 ## 8. Success metrics
 - % of known cheating patterns caught in controlled red-team tests (per module, tracked separately)
 - False-positive rate on legitimate candidates (target: near-zero auto-actions, human review handles all flags)
 - p95 latency for video call and editor sync
 - Time-to-signature for new cheat tools added to the native helper's detection list
+
+## 9. Release-readiness gates
+
+These gates are required before any pilot or production distribution. They are not replaced by ordinary unit tests.
+
+### Accessibility review gate
+
+Anecites is not pilot-ready until the candidate, interviewer, and reviewer flows complete an accessibility review covering:
+- keyboard-only navigation for join, editor, code execution, media controls, reviewer queue, and review actions
+- screen-reader names, roles, state announcements, and error messages for all interactive controls
+- visible focus order and focus trapping in dialogs
+- WCAG contrast checks for text, controls, risk states, charts, and disabled states
+- captions or transcript accommodation for interview audio where required
+- reduced-motion behavior for any animated status, loading, or risk-review UI
+- accommodations for candidates whose disability, camera setup, eye contact, speech, or movement patterns may affect gaze, face, audio, or native-monitoring signals
+
+No accessibility blocker may be documented as resolved until it has been verified against the built UI.
+
+### Sandbox/security review gate
+
+Local Piston is a development convenience, not a production trust boundary. Production candidate code execution is not release-ready until a security review approves:
+- outbound-network blocking from code-execution containers
+- CPU, memory, process, file, wall-time, and output limits
+- container privilege and seccomp/AppArmor/gVisor/Firecracker or equivalent isolation
+- network isolation from Postgres, Redis, RabbitMQ, MinIO/S3, LiveKit, and internal APIs
+- object-storage credentials remaining backend-only
+- media-worker isolation from candidate code execution and from direct client access
+- evidence that code execution, media analysis, and reviewer APIs cannot share secrets or internal service reachability
+
+The media worker is also not production-ready until model runtimes are packaged locally and reviewed for outbound-network behavior, CPU/memory limits, license terms, and object-storage access.
+
+### Signing and update-process gate
+
+The desktop app must not be distributed as production software until release engineering verifies:
+- platform signing for Windows installers and binaries
+- release provenance for source commit, build environment, artifact checksums, and dependency lockfiles
+- an explicit update channel policy for dev, pilot, and production
+- signed update manifests or an equivalent authenticated update mechanism before enabling automatic updates
+- rollback procedure for bad releases and compromised signing material
+- signature/key rotation and expiration monitoring
+- a manual install path that is clearly labeled non-production if signing or authenticated updates are absent
+
+No unsigned or unauthenticated update path is production-ready.

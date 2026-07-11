@@ -1,0 +1,29 @@
+{
+  "name": "@anecites/media-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build:deps": "npm run build --workspace @anecites/db && npm run build --workspace @anecites/shared && npm run build --workspace @anecites/server",
+    "build": "npm run build:deps && tsc -p tsconfig.json",
+    "typecheck": "npm run build:deps && tsc -p tsconfig.json --noEmit",
+    "lint": "npm run typecheck",
+    "test": "npm run build && node --test --test-isolation=none test/*.test.mjs"
+  },
+  "dependencies": {
+    "@anecites/db": "0.0.0",
+    "@anecites/server": "0.0.0",
+    "@anecites/shared": "0.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.2"
+  }
+}

@@ -42,6 +42,8 @@ export interface LiveKitRecordingResponse {
   roomName: string;
   status: number;
   filepath?: string;
+  evidenceObjectId?: string;
+  storageKey?: string;
 }
 
 export async function createLiveKitJoinToken(

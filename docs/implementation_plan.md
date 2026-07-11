@@ -306,12 +306,118 @@ Deliverables:
 - Composite risk engine.
 - Reviewer dashboard.
 
+Server-side media architecture:
+
+```text
+LiveKit room
+  -> LiveKit egress recording
+  -> MinIO/S3 recording object
+  -> Postgres EvidenceObject reference
+  -> RabbitMQ media-analysis job containing object ids only
+  -> apps/media-worker
+       -> bounded audio/video sample extraction
+       -> VAD / diarization adapter
+       -> face / multi-face / gaze adapter
+       -> shared MediaRiskSignalReport
+  -> Express risk-summary service
+  -> reviewer queue
+```
+
+Implementation order:
+
+1. Persist LiveKit recording outputs as `EvidenceObject` rows.
+   - The existing recording route currently returns the S3 filepath but does not persist an evidence reference.
+   - Do this before media inference so every media signal can link to a specific recording object.
+
+2. Add shared media-risk report types and mappers.
+   - Keep raw frames, landmarks, waveform chunks, embeddings, and transcripts out of Postgres.
+   - Store only bounded derived metadata in risk signals.
+   - Extend the current `risk.media.second_voice` support with explicit face/multi-face/gaze signal types before UI work depends on them.
+
+3. Add media-analysis configuration and queue contracts.
+   - Use RabbitMQ for discrete media-analysis jobs.
+   - Job payloads must contain `sessionId`, `recordingEvidenceObjectId`, and analysis options only.
+   - Job payloads must not contain raw media bytes, frame dumps, access credentials, or provider secrets.
+
+4. Add `apps/media-worker`.
+   - The worker reads object references from Postgres and media bytes from S3/MinIO.
+   - The worker runs sample extraction and model adapters off the Express request path.
+   - Use injected adapters in tests before adding heavyweight CV/audio runtimes.
+
+5. Add audio analysis first.
+   - VAD is the first deliverable because it is easier to test deterministically than gaze.
+   - Diarization / second-voice detection should operate on candidate audio windows and produce `risk.media.second_voice` only when confidence and duration thresholds are met.
+
+6. Add video analysis after audio.
+   - Face presence and multi-face are lower-risk than gaze and should land first.
+   - Gaze/off-screen detection requires a per-session calibration contract; do not claim gaze accuracy without calibration fixtures and shadow-mode evaluation.
+
+7. Persist media-derived risk summaries.
+   - Media signals should flow through the existing `createRiskSummary` service.
+   - All media-derived summaries remain `humanReviewRequired=true`.
+   - No single media signal may trigger an automated adverse action.
+
+Candidate/client boundary:
+- The Tauri/React client must not run face, gaze, VAD, diarization, or model inference for core proctoring decisions.
+- The client may collect consent and calibration inputs, but processing and risk scoring stay backend-side.
+- The frontend never receives model credentials, object-storage credentials, or direct media-worker access.
+
+Controls enforced by Anecites backend:
+- Consent required before recording/media analysis.
+- Recording evidence object references only; no raw media in Postgres.
+- Queue payload size limits.
+- Sample-window and recording-duration limits.
+- Confidence and duration thresholds for emitted media signals.
+- Human-review-only risk summaries.
+- Retention policy values are explicit configuration knobs:
+  - `RECORDING_RETENTION_DAYS` defaults to 30.
+  - `EVIDENCE_RETENTION_DAYS` and `REPLAY_RETENTION_DAYS` default to 90.
+  - `TELEMETRY_RETENTION_DAYS` defaults to 180.
+  - `RISK_SUMMARY_RETENTION_DAYS` defaults to 365.
+  These values are policy/config only until a cleanup worker physically deletes expired Postgres rows and object-storage evidence.
+
+Controls enforced by the media worker/runtime:
+- CPU and memory limits in the worker container.
+- Bounded FFmpeg/sample extraction.
+- Model adapter timeout.
+- No outbound network by default once required models are present locally.
+
+Unconfirmed before implementation:
+- Exact server-side CV runtime packaging for MediaPipe Face Landmarker in this repo.
+- Exact VAD/diarization runtime packaging and licenses for production use.
+- Whether the first worker should be Node-only, Python-only, or a small mixed container. Decide after proving the extraction/model adapter tests.
+
 Gate:
 - Gaze calibration accuracy test.
 - Second-voice detection test.
 - Native helper controlled detection and false-positive test.
 - Full mock interview with planted cheat attempt.
 - Shadow-mode calibration before production enforcement.
+
+Legal/privacy/adverse-action gate:
+- Anecites is not pilot-ready until qualified legal/privacy counsel approves candidate notice, consent language, recording/media inference, biometric/sensitive-data handling, retention/deletion windows, reviewer access, appeals, and adverse-action workflows for the intended launch jurisdictions.
+- Engineering checks may prove that consent, retention knobs, human-review-only summaries, and evidence boundaries are implemented; they must not be represented as legal compliance.
+- Reviewer workflows must continue to present risk summaries as evidence requiring human judgment, not as automated employment or interview decisions.
+- Product copy must not claim that gaze, face, voice, native, or composite risk signals are bias-free, conclusive, or sufficient for adverse action without human review.
+
+Accessibility gate:
+- Anecites is not pilot-ready until candidate, interviewer, and reviewer flows pass keyboard-only, screen-reader, visible-focus, dialog-focus, contrast, captions/accommodation, and reduced-motion review.
+- The review must include the editor, code execution controls, LiveKit media controls, screen-share controls, native-monitoring consent/status, risk summaries, reviewer queue, and review actions.
+- Webcam/gaze/audio/native-monitoring signals require an accessibility accommodation path before they can affect human-review workflows.
+- Do not mark an accessibility blocker resolved in docs or release notes until it is verified against the built UI.
+
+Sandbox/security gate:
+- Local-development Piston is privileged and exposed only on localhost; this is acceptable for development but not sufficient for production candidate code execution.
+- Production code execution requires a dedicated security review covering outbound-network blocking, CPU/memory/process/file/wall-time/output limits, container privilege, seccomp/AppArmor/gVisor/Firecracker or equivalent isolation, and network isolation from Postgres, Redis, RabbitMQ, MinIO/S3, LiveKit, and internal APIs.
+- Piston or Judge0 must remain backend-only. The Tauri/React client must never receive provider URLs, provider credentials, object-storage credentials, or internal service addresses.
+- Media workers must remain separate from the Express request path and from code-execution containers. They must not expose direct client endpoints, and their object-storage access must be scoped to evidence objects required for a job.
+- Model/runtime packages for media inference must be reviewed for licensing, outbound-network behavior, update source, CPU/memory behavior, and reproducible packaging before production use.
+
+Signing/update-process gate:
+- The Tauri desktop app is not production-distributable until release engineering verifies platform signing, artifact provenance, update-channel policy, authenticated update manifests, rollback, and key/signature rotation.
+- Release provenance must identify the source commit, build machine or CI runner, dependency lockfiles, generated artifact checksums, and reviewer approval.
+- Development or pilot builds without signing or authenticated updates must be labeled non-production.
+- No unsigned or unauthenticated auto-update path may be enabled for production.
 
 ## Known Risks and Required Follow-Up
 
@@ -320,4 +426,5 @@ Gate:
 - Package versions are not confirmed from the current codebase.
 - Piston hardening details require a dedicated security review before production use. Piston runs as a privileged container and is acceptable for local development, not a complete production trust boundary.
 - Local Judge0 starts and publishes the API port, but its sandbox runtime fails on Docker Desktop cgroup v2. Keep Judge0 only as an optional future provider for a dedicated Linux host.
-- Biometric processing, recording retention, and adverse-action workflows require legal review before pilot deployment.
+- Biometric processing, recording retention, candidate notice, consent, appeals, and adverse-action workflows require legal/privacy counsel approval before pilot deployment.
+- Accessibility, sandbox/security, and signing/update-process gates require explicit review before pilot or production distribution.

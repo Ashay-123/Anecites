@@ -36,3 +36,55 @@ fn native_capabilities_report_all_boundary_modules() {
     assert!(capability_names.contains(&"capture_affinity"));
     assert!(capability_names.contains(&"virtualization_detection"));
 }
+
+#[test]
+#[cfg(target_os = "windows")]
+fn process_scan_reports_current_process_on_windows() {
+    let report = commands::scan_processes(500).unwrap();
+    let current_pid = std::process::id();
+
+    assert_eq!(report.platform, "windows");
+    assert!(!report.processes.is_empty());
+    assert!(report
+        .processes
+        .iter()
+        .any(|process| process.pid == current_pid));
+    assert!(report
+        .processes
+        .iter()
+        .all(|process| !process.name.trim().is_empty()));
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn window_scan_reports_bounded_window_records_on_windows() {
+    let report = commands::scan_windows(50).unwrap();
+
+    assert_eq!(report.platform, "windows");
+    assert!(!report.windows.is_empty());
+    assert!(report.windows.len() <= 50);
+    assert!(report
+        .windows
+        .iter()
+        .all(|window| !window.id.trim().is_empty()));
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn capture_affinity_rejects_invalid_window_handles() {
+    let error = commands::check_capture_affinity("0".to_string()).unwrap_err();
+
+    assert_eq!(error.code, "INVALID_ARGUMENT");
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn virtualization_detection_reports_cpuid_signal_on_windows() {
+    let report = commands::detect_virtualization().unwrap();
+
+    assert_eq!(report.platform, "windows");
+    assert!(report
+        .signals
+        .iter()
+        .any(|signal| signal.name == "cpuid.hypervisor_present"));
+}

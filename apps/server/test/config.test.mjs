@@ -11,6 +11,20 @@ const validEnv = {
   DATABASE_URL: "postgresql://anecites:anecites_dev_password@localhost:5432/anecites",
   REDIS_URL: "redis://localhost:6379",
   RABBITMQ_URL: "amqp://anecites:anecites_dev_password@localhost:5672",
+  EVIDENCE_RETENTION_DAYS: "90",
+  RECORDING_RETENTION_DAYS: "30",
+  REPLAY_RETENTION_DAYS: "90",
+  TELEMETRY_RETENTION_DAYS: "180",
+  RISK_SUMMARY_RETENTION_DAYS: "365",
+  MEDIA_ANALYSIS_ENABLED: "true",
+  MEDIA_ANALYSIS_QUEUE_NAME: "media-analysis.jobs",
+  MEDIA_ANALYSIS_SAMPLE_WINDOW_MS: "10000",
+  MEDIA_ANALYSIS_MAX_SAMPLES_PER_RECORDING: "12",
+  MEDIA_ANALYSIS_REQUEST_TIMEOUT_MS: "30000",
+  MEDIA_ANALYSIS_SECOND_VOICE_CONFIDENCE_THRESHOLD: "0.8",
+  MEDIA_ANALYSIS_FACE_MISSING_CONFIDENCE_THRESHOLD: "0.8",
+  MEDIA_ANALYSIS_MULTIPLE_FACES_CONFIDENCE_THRESHOLD: "0.8",
+  MEDIA_ANALYSIS_GAZE_OFFSCREEN_CONFIDENCE_THRESHOLD: "0.85",
   CODE_EXECUTION_PROVIDER: "piston",
   CODE_EXECUTION_ALLOWED_LANGUAGE_IDS: "63,71",
   PISTON_BASE_URL: "http://127.0.0.1:2000",
@@ -32,6 +46,20 @@ test("loadServerConfig accepts the required API server environment", () => {
     databaseUrl: validEnv.DATABASE_URL,
     redisUrl: validEnv.REDIS_URL,
     rabbitmqUrl: validEnv.RABBITMQ_URL,
+    evidenceRetentionDays: 90,
+    recordingRetentionDays: 30,
+    replayRetentionDays: 90,
+    telemetryRetentionDays: 180,
+    riskSummaryRetentionDays: 365,
+    mediaAnalysisEnabled: true,
+    mediaAnalysisQueueName: "media-analysis.jobs",
+    mediaAnalysisSampleWindowMs: 10000,
+    mediaAnalysisMaxSamplesPerRecording: 12,
+    mediaAnalysisRequestTimeoutMs: 30000,
+    mediaAnalysisSecondVoiceConfidenceThreshold: 0.8,
+    mediaAnalysisFaceMissingConfidenceThreshold: 0.8,
+    mediaAnalysisMultipleFacesConfidenceThreshold: 0.8,
+    mediaAnalysisGazeOffscreenConfidenceThreshold: 0.85,
     codeExecutionProvider: "piston",
     codeExecutionAllowedLanguageIds: [63, 71],
     pistonBaseUrl: validEnv.PISTON_BASE_URL,
@@ -80,6 +108,115 @@ test("loadServerConfig fails closed when no code execution languages are allowed
   assert.throws(
     () => loadServerConfig({ ...validEnv, CODE_EXECUTION_ALLOWED_LANGUAGE_IDS: "" }),
     /CODE_EXECUTION_ALLOWED_LANGUAGE_IDS is required/,
+  );
+});
+
+test("loadServerConfig validates data-retention settings", () => {
+  const defaultConfig = loadServerConfig({
+    ...validEnv,
+    EVIDENCE_RETENTION_DAYS: "",
+    RECORDING_RETENTION_DAYS: "",
+    REPLAY_RETENTION_DAYS: "",
+    TELEMETRY_RETENTION_DAYS: "",
+    RISK_SUMMARY_RETENTION_DAYS: "",
+  });
+
+  assert.equal(defaultConfig.evidenceRetentionDays, 90);
+  assert.equal(defaultConfig.recordingRetentionDays, 30);
+  assert.equal(defaultConfig.replayRetentionDays, 90);
+  assert.equal(defaultConfig.telemetryRetentionDays, 180);
+  assert.equal(defaultConfig.riskSummaryRetentionDays, 365);
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        EVIDENCE_RETENTION_DAYS: "0",
+      }),
+    /EVIDENCE_RETENTION_DAYS must be a positive integer/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        RECORDING_RETENTION_DAYS: "3661",
+      }),
+    /RECORDING_RETENTION_DAYS must be less than or equal to 3650/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        RISK_SUMMARY_RETENTION_DAYS: "forever",
+      }),
+    /RISK_SUMMARY_RETENTION_DAYS must be a positive integer/,
+  );
+});
+
+test("loadServerConfig validates media-analysis settings", () => {
+  const disabledByDefault = loadServerConfig({
+    ...validEnv,
+    MEDIA_ANALYSIS_ENABLED: "",
+    MEDIA_ANALYSIS_QUEUE_NAME: "",
+  });
+
+  assert.equal(disabledByDefault.mediaAnalysisEnabled, false);
+  assert.equal(disabledByDefault.mediaAnalysisQueueName, "media-analysis.jobs");
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        MEDIA_ANALYSIS_ENABLED: "sometimes",
+      }),
+    /MEDIA_ANALYSIS_ENABLED must be true or false/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        MEDIA_ANALYSIS_QUEUE_NAME: "../unsafe",
+      }),
+    /MEDIA_ANALYSIS_QUEUE_NAME must contain only/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        MEDIA_ANALYSIS_SAMPLE_WINDOW_MS: "60001",
+      }),
+    /MEDIA_ANALYSIS_SAMPLE_WINDOW_MS must be less than or equal to 60000/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        MEDIA_ANALYSIS_MAX_SAMPLES_PER_RECORDING: "101",
+      }),
+    /MEDIA_ANALYSIS_MAX_SAMPLES_PER_RECORDING must be less than or equal to 100/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        MEDIA_ANALYSIS_REQUEST_TIMEOUT_MS: "300001",
+      }),
+    /MEDIA_ANALYSIS_REQUEST_TIMEOUT_MS must be less than or equal to 300000/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        MEDIA_ANALYSIS_SECOND_VOICE_CONFIDENCE_THRESHOLD: "1.1",
+      }),
+    /MEDIA_ANALYSIS_SECOND_VOICE_CONFIDENCE_THRESHOLD must be between 0 and 1/,
   );
 });
 

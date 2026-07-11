@@ -785,4 +785,296 @@ The project does not move to the video module until all tests below pass.
       - [x] Added `createRiskSummary` in `apps/server/src/risk-summaries.ts`.
       - [x] `npm run test --workspace @anecites/server` (`30` tests, `30` passed, `0` failed)
       - [x] Final verification after T-MON-02: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`102` Node tests and `4` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
-- [ ] Hardening: legal review, accessibility review, sandbox review, signature update process, data retention policy.
+  - [x] T-MON-03: Add shared lag-loop timing detector.
+    - Test first:
+      - [x] Add shared tests that sustained event-loop lag emits `risk.timing.lag_loop`.
+      - [x] Add shared tests that isolated delay spikes do not emit a signal.
+      - [x] Add shared tests that invalid timing samples fail closed.
+    - Done when:
+      - [x] Lag-loop detection emits a standard `RiskSignalInput`.
+      - [x] The detector records threshold, consecutive sample count, and max lag in metadata.
+      - [x] The detector does not treat one-off lag spikes as sustained suspicious timing.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/shared` failed as expected before implementation because `detectLagLoopRiskSignal` was not exported.
+      - [x] Added `detectLagLoopRiskSignal` in shared risk code.
+      - [x] `npm run test --workspace @anecites/shared` (`21` tests, `21` passed, `0` failed)
+      - [x] Final verification after T-MON-03: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`105` Node tests and `4` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-04: Map native helper reports to risk signals.
+    - Test first:
+      - [x] Add shared tests that capture-affinity and virtualization reports emit native risk signals.
+      - [x] Add shared tests that clean native reports emit no signal.
+      - [x] Add shared tests that invalid native reports fail closed.
+    - Done when:
+      - [x] Capture-affinity reports with `protectedFromCapture=true` map to `risk.native.capture_affinity`.
+      - [x] Virtualization reports with detected signals map to `risk.native.vm_signal`.
+      - [x] Native report mapping produces standard `RiskSignalInput` records.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/shared` failed as expected before implementation because `createNativeRiskSignals` was not exported.
+      - [x] Added `createNativeRiskSignals` in shared risk code.
+      - [x] `npm run test --workspace @anecites/shared` (`24` tests, `24` passed, `0` failed)
+      - [x] Final verification after T-MON-04: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`108` Node tests and `4` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-05: Replace native helper placeholders with Windows user-mode scans.
+    - Test first:
+      - [x] Add Rust tests that process scanning reports the current Windows test process.
+      - [x] Add Rust tests that window scanning returns bounded real window records.
+      - [x] Add Rust tests that capture-affinity rejects invalid window handles.
+      - [x] Add Rust tests that virtualization detection emits a CPUID hypervisor signal.
+    - Done when:
+      - [x] Process scanning uses a real Windows ToolHelp snapshot and enforces the existing scan limit.
+      - [x] Window scanning uses Windows top-level window enumeration and enforces the existing scan limit.
+      - [x] Capture-affinity validates HWND input and reports Windows display-affinity protection when queryable.
+      - [x] Virtualization detection reports the CPUID hypervisor-present signal without requiring kernel access.
+      - [x] Tauri command serialization uses camelCase native report fields that match the shared TypeScript risk mapper.
+    - Verification log:
+      - [x] `npm run test:rust --workspace @anecites/desktop` failed as expected before implementation: process/window scans were empty, invalid HWND was accepted, and CPUID signal was missing.
+      - [x] Added direct `windows-sys@0.61.2` usage for the required Win32 APIs already present in the Tauri dependency graph.
+      - [x] `npm run test:rust --workspace @anecites/desktop` (`8` Rust tests, `8` passed, `0` failed)
+      - [x] `npm run test --workspace @anecites/desktop` (`10` Node tests and `8` Rust tests, all passed)
+      - [x] Final verification after T-MON-05: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`108` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-06: Add desktop native monitoring snapshot flow.
+    - Test first:
+      - [x] Add desktop tests that collect capabilities, process scan, window scan, capture-affinity reports, and virtualization reports into one timestamped native risk report.
+      - [x] Add desktop tests that unavailable native capabilities fail closed.
+      - [x] Add desktop tests that invalid native scan limits fail closed before invoking Tauri commands.
+      - [x] Add desktop render coverage for the native-monitor panel.
+    - Done when:
+      - [x] The desktop TypeScript layer exposes a testable native monitoring collector with injected Tauri `invoke`.
+      - [x] The collector returns the shared `NativeRiskSignalReport` shape expected by `createNativeRiskSignals`.
+      - [x] The desktop shell exposes a native-check control and compact scan counts.
+      - [x] Native reports are collected on the candidate client but are not sent to Piston, Judge0, or any client-side code execution path.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/desktop` failed as expected before implementation because `dist/native.js` did not exist.
+      - [x] After collector implementation, `npm run test --workspace @anecites/desktop` passed collector coverage.
+      - [x] `npm run test --workspace @anecites/desktop` failed as expected before UI wiring because `Native monitor` was not rendered.
+      - [x] Added `apps/desktop/src/native.ts`, wired the native monitor panel into `App.tsx`, and added a direct desktop dependency on `@anecites/shared`.
+      - [x] `npm run test --workspace @anecites/desktop` (`13` Node tests and `8` Rust tests, all passed)
+  - [x] T-MON-07: Persist desktop native monitoring reports through the backend.
+    - Test first:
+      - [x] Add server route tests that a suspicious native report creates a pending-review risk summary.
+      - [x] Add server route tests that a clean native report returns no risk summary.
+      - [x] Add desktop tests that native report submission posts only to the Anecites backend.
+      - [x] Add desktop tests that clean-report backend responses are handled.
+    - Done when:
+      - [x] `POST /sessions/:sessionId/native-risk-report` requires authentication through the existing session route boundary.
+      - [x] The route verifies the participant is active in the target session.
+      - [x] The route maps `NativeRiskSignalReport` through `createNativeRiskSignals`.
+      - [x] Native risk summaries are persisted with the existing human-review-only summary service.
+      - [x] Clean native reports are acknowledged without creating empty risk summaries.
+      - [x] The desktop submits native reports to the backend after local collection and does not contact any code-execution provider.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/server` failed as expected before implementation with HTTP 404 for `/sessions/:sessionId/native-risk-report`.
+      - [x] Added native report ingestion to `apps/server/src/sessions.ts`.
+      - [x] `npm run test --workspace @anecites/server` (`32` tests, `32` passed, `0` failed)
+      - [x] `npm run test --workspace @anecites/desktop` failed as expected before client submission implementation because `submitNativeMonitoringSnapshot` was not exported.
+      - [x] Added `submitNativeMonitoringSnapshot` and wired the desktop native check to submit to the backend.
+      - [x] `npm run test --workspace @anecites/desktop` (`15` Node tests and `8` Rust tests, all passed)
+      - [x] Final verification after T-MON-07: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`115` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-08: Add reviewer risk-summary read model.
+    - Test first:
+      - [x] Add route tests that privileged users can list a session's risk summaries in newest-first order.
+      - [x] Add route tests that candidate tokens cannot read reviewer risk summaries.
+      - [x] Add service tests for review-status filtering.
+    - Done when:
+      - [x] `GET /sessions/:sessionId/risk-summaries` returns serialized risk summaries without raw evidence payloads.
+      - [x] The route requires an authenticated interviewer, reviewer, or admin role.
+      - [x] Optional `reviewStatus` filtering supports the existing review statuses and rejects invalid values.
+      - [x] The API preserves the human-review-only policy and does not create automated verdicts.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/server` failed as expected before implementation with missing `listRiskSummaries` export and HTTP 404 for `/sessions/:sessionId/risk-summaries`.
+      - [x] Added authenticated-principal propagation, `listRiskSummaries`, and privileged route access for session risk summaries.
+      - [x] `npm run test --workspace @anecites/server` (`35` tests, `35` passed, `0` failed)
+      - [x] Final verification after T-MON-08: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`118` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-09: Add reviewer risk-summary status actions.
+    - Test first:
+      - [x] Add service tests that review status updates persist reviewer identity and review timestamp.
+      - [x] Add route tests that privileged reviewer users can update a session risk summary status.
+      - [x] Add route tests that candidate tokens cannot update review status.
+    - Done when:
+      - [x] `PATCH /sessions/:sessionId/risk-summaries/:riskSummaryId/review` accepts existing review statuses only.
+      - [x] Review writes require an authenticated interviewer, reviewer, or admin user that exists in the database.
+      - [x] Review writes verify the risk summary belongs to the target session.
+      - [x] Review writes only change review metadata and do not alter score or signal breakdown.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/server` failed as expected before implementation with missing `updateRiskSummaryReview` export and HTTP 404 for `/sessions/:sessionId/risk-summaries/:riskSummaryId/review`.
+      - [x] Added `updateRiskSummaryReview` and `PATCH /sessions/:sessionId/risk-summaries/:riskSummaryId/review`.
+      - [x] `npm run test --workspace @anecites/server` (`39` tests, `39` passed, `0` failed)
+      - [x] Final verification after T-MON-09: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`122` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-10: Add desktop reviewer queue client and panel.
+    - Test first:
+      - [x] Add desktop client tests for listing session risk summaries through the backend only.
+      - [x] Add desktop client tests for updating review status through the backend only.
+      - [x] Add desktop render coverage for the reviewer queue panel.
+    - Done when:
+      - [x] The desktop exposes a small reviewer client for `GET /sessions/:sessionId/risk-summaries`.
+      - [x] The desktop exposes a small reviewer client for `PATCH /sessions/:sessionId/risk-summaries/:riskSummaryId/review`.
+      - [x] The desktop shell can refresh risk summaries and submit review actions after joining a session.
+      - [x] No raw evidence payloads, provider credentials, or code-execution endpoints are exposed in the reviewer panel.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/desktop` failed as expected before implementation because `dist/review.js` did not exist and the reviewer queue panel was missing.
+      - [x] Added `apps/desktop/src/review.ts` and wired the reviewer queue panel into `App.tsx`.
+      - [x] `npm run test --workspace @anecites/desktop` (`18` Node tests and `8` Rust tests, all passed)
+      - [x] Final verification after T-MON-10: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`125` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-11: Persist LiveKit recording outputs as evidence objects.
+    - Test first:
+      - [x] Add server route tests that starting LiveKit recording creates an `EvidenceObject` with `kind=SESSION_RECORDING`.
+      - [x] Add server route tests that the recording response includes the evidence object id and S3 key.
+      - [x] Add server route tests that failed egress start does not create an orphan evidence object.
+    - Done when:
+      - [x] The existing `/sessions/:sessionId/livekit-recording` route persists a recording evidence reference after egress start succeeds.
+      - [x] Recording evidence stores bucket, key, content type, and LiveKit egress metadata.
+      - [x] Raw media bytes are not stored in Postgres.
+      - [x] The persisted evidence object can be used as the input pointer for media-analysis jobs.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/server` failed as expected before implementation because recording responses did not include `evidenceObjectId`.
+      - [x] Added recording evidence persistence to `POST /sessions/:sessionId/livekit-recording`.
+      - [x] `npm run test --workspace @anecites/server` (`40` tests, `40` passed, `0` failed)
+      - [x] Final verification after T-MON-11: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`126` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-12: Add shared media risk report taxonomy.
+    - Test first:
+      - [x] Add shared tests that second-voice reports map to `risk.media.second_voice`.
+      - [x] Add shared tests for face-missing, multiple-face, and gaze-offscreen report mapping.
+      - [x] Add shared tests that low-confidence or short-duration media observations emit no risk signal.
+      - [x] Add shared tests that invalid media report shapes fail closed.
+    - Done when:
+      - [x] Shared code exposes `MediaRiskSignalReport` and `createMediaRiskSignals`.
+      - [x] Media signals include bounded metadata only: confidence, duration, sample window, and adapter version.
+      - [x] No raw frames, landmarks, waveforms, transcripts, embeddings, or speaker labels are persisted as risk metadata.
+      - [x] Media signals still flow through the existing composite human-review policy.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/shared` failed as expected before implementation because `createMediaRiskSignals` was not exported.
+      - [x] Added media signal taxonomy and `createMediaRiskSignals` in `packages/shared/src/risk.ts`.
+      - [x] `npm run test --workspace @anecites/shared` (`27` tests, `27` passed, `0` failed)
+      - [x] Final verification after T-MON-12: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`129` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-13: Add media-analysis configuration and queue contract.
+    - Test first:
+      - [x] Add config tests for media-analysis enablement, queue name, sample limits, timeout, and confidence thresholds.
+      - [x] Add tests that invalid media-analysis limits fail closed.
+      - [x] Add tests that media-analysis job payloads contain object ids only, not raw media bytes or credentials.
+    - Done when:
+      - [x] `ServerConfig` exposes media-analysis settings without requiring the worker to run during normal API development.
+      - [x] The media job contract contains `sessionId`, `recordingEvidenceObjectId`, requested analysis modes, and bounded options.
+      - [x] RabbitMQ is the planned transport for discrete media-analysis jobs.
+      - [x] The frontend has no direct media-worker endpoint.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/shared` failed as expected before implementation because `MEDIA_ANALYSIS_MODES` was not exported.
+      - [x] `npm run test --workspace @anecites/server` failed as expected before implementation because media-analysis config fields were missing.
+      - [x] Added shared media-analysis job contract in `packages/shared/src/media-analysis.ts`.
+      - [x] Added media-analysis settings to `ServerConfig` and `.env.example`.
+      - [x] `npm run test --workspace @anecites/shared` (`30` tests, `30` passed, `0` failed)
+      - [x] `npm run test --workspace @anecites/server` (`41` tests, `41` passed, `0` failed)
+      - [x] Final verification after T-MON-13: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`133` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-14: Add `apps/media-worker` skeleton with injected media adapters.
+    - Test first:
+      - [x] Add worker tests that load recording evidence references from Postgres and reject missing or wrong-kind evidence.
+      - [x] Add worker tests that injected audio/video adapters receive bounded sample-window requests.
+      - [x] Add worker tests that adapter timeouts and malformed adapter responses fail closed.
+    - Done when:
+      - [x] `apps/media-worker` is an npm workspace with build, typecheck, lint, and test scripts.
+      - [x] The worker can process a media-analysis job using injected adapters without adding heavyweight model dependencies yet.
+      - [x] The worker does not run inside the Express API request path.
+      - [x] The worker never writes raw extracted media samples to Postgres.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/media-worker` failed as expected before implementation because `MediaWorkerError` was not exported.
+      - [x] Added `apps/media-worker` with `processMediaAnalysisJob`, injected audio/video adapters, bounded adapter requests, timeout handling, and sanitized media report output.
+      - [x] `npm run test --workspace @anecites/media-worker` (`3` tests, `3` passed, `0` failed)
+      - [x] Final verification after T-MON-14: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`136` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-15: Add audio VAD and second-voice detection adapter boundary.
+    - Test first:
+      - [x] Add fixture-based tests for one-speaker audio producing no second-voice signal.
+      - [x] Add fixture-based tests for two-speaker audio producing `risk.media.second_voice`.
+      - [x] Add tests that short or low-confidence voice segments do not emit signals.
+    - Done when:
+      - [x] The media worker can convert audio analysis output into `MediaRiskSignalReport`.
+      - [x] Detection thresholds are configurable and bounded.
+      - [x] Audio-derived summaries link back to the recording evidence object.
+      - [x] No real model/runtime dependency was added; licensing and production packaging must still be verified before introducing one.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/media-worker` failed as expected before implementation because `createSecondVoiceAudioAdapter` was not exported.
+      - [x] Added fixture-driven `createSecondVoiceAudioAdapter` with injected voice-segment analysis, bounded duration/confidence thresholds, and sanitized second-voice observations.
+      - [x] `npm run test --workspace @anecites/media-worker` (`7` tests, `7` passed, `0` failed)
+      - [x] Final verification after T-MON-15: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`140` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-16: Add video face/multi-face/gaze adapter boundary.
+    - Test first:
+      - [x] Add fixture-based tests for no-face and multi-face observations.
+      - [x] Add calibration-contract tests for gaze/off-screen observations.
+      - [x] Add tests that uncalibrated gaze observations cannot emit high-confidence gaze signals.
+    - Done when:
+      - [x] The media worker can map server-side video analysis output into media risk reports.
+      - [x] Face presence and multi-face detection land before gaze enforcement.
+      - [x] Gaze analysis requires per-session calibration metadata.
+      - [x] No gaze or face geometry is processed on the candidate desktop for core proctoring decisions.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/media-worker` failed as expected before implementation because `createVideoAnalysisAdapter` was not exported.
+      - [x] `npm run test --workspace @anecites/shared` failed as expected before implementation because uncalibrated gaze emitted `risk.media.gaze_offscreen`.
+      - [x] Added fixture-driven `createVideoAnalysisAdapter` with injected video-window analysis, face/multi-face mapping, gaze calibration enforcement, and sanitized output.
+      - [x] Updated shared media risk mapping so uncalibrated gaze observations do not emit risk signals.
+      - [x] `npm run test --workspace @anecites/media-worker` (`11` tests, `11` passed, `0` failed)
+      - [x] `npm run test --workspace @anecites/shared` (`31` tests, `31` passed, `0` failed)
+      - [x] Final verification after T-MON-16: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`145` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-17: Persist media-derived risk summaries.
+    - Test first:
+      - [x] Add worker/service tests that media reports with signals create pending-review risk summaries.
+      - [x] Add worker/service tests that clean media reports do not create empty summaries.
+      - [x] Add tests that media summaries preserve evidence object links and bounded metadata.
+    - Done when:
+      - [x] Media-derived risk signals use `createRiskSummary`.
+      - [x] Summaries remain human-review-only.
+      - [x] Reviewer queue can display media-derived summaries without raw media payloads.
+      - [x] A single media signal cannot produce an automated adverse action.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/media-worker` failed as expected before implementation because `riskSummary` was not returned or persisted.
+      - [x] Reused the existing server `createRiskSummary` service from the media worker and derived summary windows from bounded media sample timestamps.
+      - [x] Clean media reports now return `riskSummary: null` and do not persist empty summaries.
+      - [x] `npm run test --workspace @anecites/media-worker` (`14` tests, `14` passed, `0` failed)
+      - [x] Final verification after T-MON-17: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`148` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+- [x] Hardening and launch-readiness gates.
+  - [x] T-HARD-01: Add data-retention configuration and policy.
+    - Test first:
+      - [x] Add config tests for evidence, recording, replay, telemetry, and risk-summary retention windows.
+      - [x] Add tests that invalid retention windows fail closed.
+    - Done when:
+      - [x] Retention defaults are explicit and configurable.
+      - [x] `.env.example` documents the policy knobs without secrets.
+      - [x] The plan distinguishes policy/config from physical deletion jobs that still need implementation.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/server` failed as expected before implementation because retention config fields were missing.
+      - [x] Added retention config fields for evidence, recordings, replay evidence, telemetry, and risk summaries.
+      - [x] Documented retention policy knobs in `.env.example` and `docs/implementation_plan.md`.
+      - [x] Physical expiry/deletion jobs remain future work and are not claimed as implemented.
+      - [x] `npm run test --workspace @anecites/server` (`42` tests, `42` passed, `0` failed)
+      - [x] Final verification after T-HARD-01: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`149` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-HARD-02: Add legal/privacy/adverse-action review gate.
+    - Done when:
+      - [x] The docs clearly state legal counsel must approve recording consent, biometric/media inference, retention, candidate notice, and adverse-action workflows before pilot deployment.
+      - [x] The app does not claim legal compliance from engineering checks alone.
+    - Verification log:
+      - [x] Added a legal/privacy release gate to `docs/PRD.md`.
+      - [x] Added a legal/privacy/adverse-action gate to `docs/implementation_plan.md`.
+      - [x] Explicitly documented that engineering checks do not establish legal compliance.
+      - [x] Verification: `rg` confirmed the required gate language, `npm run verify`, and `git diff --check`.
+  - [x] T-HARD-03: Add accessibility review gate.
+    - Done when:
+      - [x] The docs identify keyboard, screen-reader, focus, contrast, captions, and reduced-motion checks required before pilot deployment.
+      - [x] The desktop UI has no known blocker documented as resolved without verification.
+    - Verification log:
+      - [x] Added accessibility release gates to `docs/PRD.md`, `docs/implementation_plan.md`, and `docs/ARCHITECTURE.md`.
+      - [x] Documented that accessibility blockers cannot be marked resolved until verified against the built UI.
+      - [x] Verification: `rg` confirmed keyboard, screen-reader, focus, contrast, captions, and reduced-motion gate language.
+  - [x] T-HARD-04: Add sandbox/security review gate.
+    - Done when:
+      - [x] The docs separate local-development Piston from production trust boundaries.
+      - [x] The docs cover outbound-network blocking, resource limits, container privilege, object-storage access, and code/media-worker isolation.
+    - Verification log:
+      - [x] Added sandbox/security release gates to `docs/PRD.md`, `docs/implementation_plan.md`, and `docs/ARCHITECTURE.md`.
+      - [x] Documented that local privileged Piston is development-only and not a production trust boundary.
+      - [x] Documented required review for outbound networking, limits, privilege, object-storage access, and code/media-worker isolation.
+      - [x] Verification: `rg` confirmed sandbox, outbound-network, resource-limit, object-storage, and worker-isolation gate language.
+  - [x] T-HARD-05: Add signature and update-process review gate.
+    - Done when:
+      - [x] The docs define required signing, release provenance, update channel, rollback, and signature refresh checks before distributing the desktop app.
+      - [x] No unsigned update path is treated as production-ready.
+    - Verification log:
+      - [x] Added signing/update-process release gates to `docs/PRD.md`, `docs/implementation_plan.md`, and `docs/ARCHITECTURE.md`.
+      - [x] Documented that unsigned or unauthenticated update paths are not production-ready.
+      - [x] Verification: `rg` confirmed signing, provenance, update-channel, rollback, and unsigned-update gate language.
+      - [x] Final verification after T-HARD-03 through T-HARD-05: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`149` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.

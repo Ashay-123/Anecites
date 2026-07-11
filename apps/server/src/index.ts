@@ -24,7 +24,16 @@ export {
   type LiveKitRecordingResponse,
 } from "./livekit.js";
 export { consoleLogger, type Logger } from "./logger.js";
-export { createRiskSummary, type CreateRiskSummaryRequest } from "./risk-summaries.js";
+export {
+  createRiskSummary,
+  isRiskSummaryReviewStatus,
+  listRiskSummaries,
+  updateRiskSummaryReview,
+  type CreateRiskSummaryRequest,
+  type ListRiskSummariesRequest,
+  type RiskSummaryReviewStatus,
+  type UpdateRiskSummaryReviewRequest,
+} from "./risk-summaries.js";
 export { createSessionRouter } from "./sessions.js";
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

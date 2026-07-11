@@ -23,6 +23,17 @@ import {
   type LiveKitMediaMode,
   type ConnectableLiveKitRoom,
 } from "./livekit.js";
+import {
+  collectNativeMonitoringSnapshot,
+  submitNativeMonitoringSnapshot,
+  type NativeMonitoringSnapshot,
+} from "./native.js";
+import {
+  listSessionRiskSummaries,
+  updateRiskSummaryReview,
+  type ReviewerRiskSummary,
+  type RiskSummaryReviewStatus,
+} from "./review.js";
 
 const defaultJoinInput: JoinSessionInput = {
   apiBaseUrl: "http://127.0.0.1:3000",
@@ -50,6 +61,8 @@ const emptyExecution: CodeExecutionResult = {
 
 type VideoStatus = "idle" | "connecting" | LiveKitConnectionStatus | "error";
 type ScreenShareStatus = "idle" | "checking" | "ready" | "sharing" | "error";
+type NativeMonitoringStatus = "idle" | "scanning" | "ready" | "error";
+type ReviewQueueStatus = "idle" | "loading" | "ready" | "updating" | "error";
 
 export function App(): React.ReactElement {
   const document = useMemo(
@@ -69,6 +82,12 @@ export function App(): React.ReactElement {
   const [mediaMode, setMediaMode] = useState<LiveKitMediaMode>("normal");
   const [screenShareStatus, setScreenShareStatus] = useState<ScreenShareStatus>("idle");
   const [screenShareError, setScreenShareError] = useState<string | null>(null);
+  const [nativeMonitoringStatus, setNativeMonitoringStatus] = useState<NativeMonitoringStatus>("idle");
+  const [nativeMonitoringError, setNativeMonitoringError] = useState<string | null>(null);
+  const [nativeSnapshot, setNativeSnapshot] = useState<NativeMonitoringSnapshot | null>(null);
+  const [reviewQueueStatus, setReviewQueueStatus] = useState<ReviewQueueStatus>("idle");
+  const [reviewQueueError, setReviewQueueError] = useState<string | null>(null);
+  const [riskSummaries, setRiskSummaries] = useState<ReviewerRiskSummary[]>([]);
   const livekitRoomRef = useRef<ConnectableLiveKitRoom | null>(null);
   const livekitRoomCleanupRef = useRef<(() => void) | null>(null);
 
@@ -104,6 +123,12 @@ export function App(): React.ReactElement {
     setMediaMode("normal");
     setScreenShareStatus("idle");
     setScreenShareError(null);
+    setNativeMonitoringStatus("idle");
+    setNativeMonitoringError(null);
+    setNativeSnapshot(null);
+    setReviewQueueStatus("idle");
+    setReviewQueueError(null);
+    setRiskSummaries([]);
   }
 
   async function connectVideo(): Promise<void> {
@@ -200,6 +225,93 @@ export function App(): React.ReactElement {
       setScreenShareError(error instanceof Error ? error.message : "Stopping screen share failed");
     }
   }
+
+  async function runNativeMonitoringCheck(): Promise<void> {
+    if (!session) {
+      setNativeMonitoringStatus("error");
+      setNativeMonitoringError("Join a session before running native check");
+      return;
+    }
+
+    try {
+      setNativeMonitoringStatus("scanning");
+      setNativeMonitoringError(null);
+      const snapshot = await collectNativeMonitoringSnapshot();
+      await submitNativeMonitoringSnapshot({
+        apiBaseUrl: session.apiBaseUrl,
+        authToken: session.authToken,
+        sessionId: session.sessionId,
+        participantId: session.participantId,
+        windowStartedAt: new Date(new Date(snapshot.occurredAt).getTime() - 60_000).toISOString(),
+        windowEndedAt: snapshot.occurredAt,
+        snapshot,
+      });
+      setNativeSnapshot(snapshot);
+      setNativeMonitoringStatus("ready");
+    } catch (error) {
+      setNativeSnapshot(null);
+      setNativeMonitoringStatus("error");
+      setNativeMonitoringError(error instanceof Error ? error.message : "Native monitoring check failed");
+    }
+  }
+
+  async function refreshReviewQueue(): Promise<void> {
+    if (!session) {
+      setReviewQueueStatus("error");
+      setReviewQueueError("Join a session before refreshing reviews");
+      return;
+    }
+
+    try {
+      setReviewQueueStatus("loading");
+      setReviewQueueError(null);
+      const result = await listSessionRiskSummaries({
+        apiBaseUrl: session.apiBaseUrl,
+        authToken: session.authToken,
+        sessionId: session.sessionId,
+      });
+      setRiskSummaries(result.riskSummaries);
+      setReviewQueueStatus("ready");
+    } catch (error) {
+      setReviewQueueStatus("error");
+      setReviewQueueError(error instanceof Error ? error.message : "Review queue refresh failed");
+    }
+  }
+
+  async function applyReviewStatus(riskSummaryId: string, reviewStatus: RiskSummaryReviewStatus): Promise<void> {
+    if (!session) {
+      setReviewQueueStatus("error");
+      setReviewQueueError("Join a session before reviewing summaries");
+      return;
+    }
+
+    try {
+      setReviewQueueStatus("updating");
+      setReviewQueueError(null);
+      const result = await updateRiskSummaryReview({
+        apiBaseUrl: session.apiBaseUrl,
+        authToken: session.authToken,
+        sessionId: session.sessionId,
+        riskSummaryId,
+        reviewStatus,
+      });
+      setRiskSummaries((current) =>
+        current.map((summary) => (summary.id === result.riskSummary.id ? result.riskSummary : summary)),
+      );
+      setReviewQueueStatus("ready");
+    } catch (error) {
+      setReviewQueueStatus("error");
+      setReviewQueueError(error instanceof Error ? error.message : "Review update failed");
+    }
+  }
+
+  const protectedWindowCount =
+    nativeSnapshot?.riskSignalReport.captureAffinityReports?.filter((report) => report.protectedFromCapture).length ?? 0;
+  const detectedVmSignalCount =
+    nativeSnapshot?.riskSignalReport.virtualizationReports?.reduce(
+      (count, report) => count + report.signals.filter((signal) => signal.detected).length,
+      0,
+    ) ?? 0;
 
   return (
     <main className="app-shell" data-anecites-desktop="interview-shell">
@@ -345,6 +457,106 @@ export function App(): React.ReactElement {
             {screenShareError ? <p className="video-error">{screenShareError}</p> : null}
           </section>
 
+          <section className="native-pane" aria-label="Native monitor">
+            <header>
+              <h2>Native monitor</h2>
+              <span>{nativeMonitoringStatus}</span>
+            </header>
+            <div className="native-actions">
+              <button
+                type="button"
+                onClick={() => void runNativeMonitoringCheck()}
+                disabled={nativeMonitoringStatus === "scanning"}
+              >
+                Run native check
+              </button>
+            </div>
+            <dl className="native-metrics">
+              <div>
+                <dt>Processes</dt>
+                <dd>{nativeSnapshot?.processReport.processes.length ?? "-"}</dd>
+              </div>
+              <div>
+                <dt>Windows</dt>
+                <dd>{nativeSnapshot?.windowReport.windows.length ?? "-"}</dd>
+              </div>
+              <div>
+                <dt>Capture flags</dt>
+                <dd>{protectedWindowCount}</dd>
+              </div>
+              <div>
+                <dt>VM signals</dt>
+                <dd>{detectedVmSignalCount}</dd>
+              </div>
+            </dl>
+            {nativeMonitoringError ? <p className="native-error">{nativeMonitoringError}</p> : null}
+          </section>
+
+          <section className="review-pane" aria-label="Reviewer queue">
+            <header>
+              <h2>Reviewer queue</h2>
+              <span>{reviewQueueStatus}</span>
+            </header>
+            <div className="review-actions">
+              <button
+                type="button"
+                onClick={() => void refreshReviewQueue()}
+                disabled={reviewQueueStatus === "loading" || reviewQueueStatus === "updating"}
+              >
+                Refresh reviews
+              </button>
+            </div>
+            <div className="review-list">
+              {riskSummaries.length === 0 ? (
+                <p className="review-empty">No risk summaries loaded</p>
+              ) : (
+                riskSummaries.map((summary) => (
+                  <article className="review-item" key={summary.id}>
+                    <div className="review-item-header">
+                      <strong>{Math.round(summary.score * 100)}%</strong>
+                      <span>{summary.reviewStatus}</span>
+                    </div>
+                    <p>{summary.rationale ?? "Review required"}</p>
+                    <dl>
+                      <div>
+                        <dt>Signals</dt>
+                        <dd>{summary.correlatedSignalCount}</dd>
+                      </div>
+                      <div>
+                        <dt>Window</dt>
+                        <dd>{formatReviewWindow(summary.windowStartedAt, summary.windowEndedAt)}</dd>
+                      </div>
+                    </dl>
+                    <div className="review-item-actions">
+                      <button
+                        type="button"
+                        onClick={() => void applyReviewStatus(summary.id, "confirmed")}
+                        disabled={reviewQueueStatus === "updating"}
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void applyReviewStatus(summary.id, "dismissed")}
+                        disabled={reviewQueueStatus === "updating"}
+                      >
+                        Dismiss
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void applyReviewStatus(summary.id, "needs_more_context")}
+                        disabled={reviewQueueStatus === "updating"}
+                      >
+                        Need context
+                      </button>
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
+            {reviewQueueError ? <p className="review-error">{reviewQueueError}</p> : null}
+          </section>
+
           <section className="output-pane" aria-label="Output">
             <header>
               <h2>Output</h2>
@@ -366,6 +578,17 @@ export function App(): React.ReactElement {
       </section>
     </main>
   );
+}
+
+function formatReviewWindow(windowStartedAt: string, windowEndedAt: string): string {
+  const start = new Date(windowStartedAt);
+  const end = new Date(windowEndedAt);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return "-";
+  }
+
+  return `${start.toLocaleTimeString()}-${end.toLocaleTimeString()}`;
 }
 
 function FieldError(props: { message: string | undefined }): React.ReactElement | null {

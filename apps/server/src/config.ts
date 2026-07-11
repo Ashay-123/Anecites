@@ -10,6 +10,20 @@ export interface ServerConfig {
   databaseUrl: string;
   redisUrl: string;
   rabbitmqUrl: string;
+  evidenceRetentionDays: number;
+  recordingRetentionDays: number;
+  replayRetentionDays: number;
+  telemetryRetentionDays: number;
+  riskSummaryRetentionDays: number;
+  mediaAnalysisEnabled: boolean;
+  mediaAnalysisQueueName: string;
+  mediaAnalysisSampleWindowMs: number;
+  mediaAnalysisMaxSamplesPerRecording: number;
+  mediaAnalysisRequestTimeoutMs: number;
+  mediaAnalysisSecondVoiceConfidenceThreshold: number;
+  mediaAnalysisFaceMissingConfidenceThreshold: number;
+  mediaAnalysisMultipleFacesConfidenceThreshold: number;
+  mediaAnalysisGazeOffscreenConfidenceThreshold: number;
   codeExecutionProvider: CodeExecutionProviderName;
   codeExecutionAllowedLanguageIds: readonly number[];
   pistonBaseUrl: string;
@@ -48,6 +62,7 @@ type EnvironmentInput = Record<string, string | undefined>;
 const NODE_ENVS = new Set(["development", "test", "production"]);
 const CODE_EXECUTION_PROVIDERS = new Set(["piston", "judge0"]);
 const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const QUEUE_NAME_PATTERN = /^[A-Za-z0-9._:-]+$/;
 
 export function loadServerConfig(env: EnvironmentInput = process.env): ServerConfig {
   const nodeEnv = parseNodeEnv(env.NODE_ENV);
@@ -90,6 +105,56 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
     databaseUrl: parseRequiredUrl("DATABASE_URL", env.DATABASE_URL),
     redisUrl: parseRequiredUrl("REDIS_URL", env.REDIS_URL),
     rabbitmqUrl: parseRequiredUrl("RABBITMQ_URL", env.RABBITMQ_URL),
+    evidenceRetentionDays: parsePositiveInteger("EVIDENCE_RETENTION_DAYS", env.EVIDENCE_RETENTION_DAYS, 90, 3_650),
+    recordingRetentionDays: parsePositiveInteger("RECORDING_RETENTION_DAYS", env.RECORDING_RETENTION_DAYS, 30, 3_650),
+    replayRetentionDays: parsePositiveInteger("REPLAY_RETENTION_DAYS", env.REPLAY_RETENTION_DAYS, 90, 3_650),
+    telemetryRetentionDays: parsePositiveInteger("TELEMETRY_RETENTION_DAYS", env.TELEMETRY_RETENTION_DAYS, 180, 3_650),
+    riskSummaryRetentionDays: parsePositiveInteger(
+      "RISK_SUMMARY_RETENTION_DAYS",
+      env.RISK_SUMMARY_RETENTION_DAYS,
+      365,
+      3_650,
+    ),
+    mediaAnalysisEnabled: parseBoolean("MEDIA_ANALYSIS_ENABLED", env.MEDIA_ANALYSIS_ENABLED, false),
+    mediaAnalysisQueueName: parseQueueName(env.MEDIA_ANALYSIS_QUEUE_NAME, "media-analysis.jobs"),
+    mediaAnalysisSampleWindowMs: parsePositiveInteger(
+      "MEDIA_ANALYSIS_SAMPLE_WINDOW_MS",
+      env.MEDIA_ANALYSIS_SAMPLE_WINDOW_MS,
+      10_000,
+      60_000,
+    ),
+    mediaAnalysisMaxSamplesPerRecording: parsePositiveInteger(
+      "MEDIA_ANALYSIS_MAX_SAMPLES_PER_RECORDING",
+      env.MEDIA_ANALYSIS_MAX_SAMPLES_PER_RECORDING,
+      12,
+      100,
+    ),
+    mediaAnalysisRequestTimeoutMs: parsePositiveInteger(
+      "MEDIA_ANALYSIS_REQUEST_TIMEOUT_MS",
+      env.MEDIA_ANALYSIS_REQUEST_TIMEOUT_MS,
+      30_000,
+      300_000,
+    ),
+    mediaAnalysisSecondVoiceConfidenceThreshold: parseConfidenceThreshold(
+      "MEDIA_ANALYSIS_SECOND_VOICE_CONFIDENCE_THRESHOLD",
+      env.MEDIA_ANALYSIS_SECOND_VOICE_CONFIDENCE_THRESHOLD,
+      0.8,
+    ),
+    mediaAnalysisFaceMissingConfidenceThreshold: parseConfidenceThreshold(
+      "MEDIA_ANALYSIS_FACE_MISSING_CONFIDENCE_THRESHOLD",
+      env.MEDIA_ANALYSIS_FACE_MISSING_CONFIDENCE_THRESHOLD,
+      0.8,
+    ),
+    mediaAnalysisMultipleFacesConfidenceThreshold: parseConfidenceThreshold(
+      "MEDIA_ANALYSIS_MULTIPLE_FACES_CONFIDENCE_THRESHOLD",
+      env.MEDIA_ANALYSIS_MULTIPLE_FACES_CONFIDENCE_THRESHOLD,
+      0.8,
+    ),
+    mediaAnalysisGazeOffscreenConfidenceThreshold: parseConfidenceThreshold(
+      "MEDIA_ANALYSIS_GAZE_OFFSCREEN_CONFIDENCE_THRESHOLD",
+      env.MEDIA_ANALYSIS_GAZE_OFFSCREEN_CONFIDENCE_THRESHOLD,
+      0.85,
+    ),
     codeExecutionProvider,
     codeExecutionAllowedLanguageIds,
     pistonBaseUrl: parseRequiredUrl("PISTON_BASE_URL", env.PISTON_BASE_URL ?? "http://127.0.0.1:2000"),
@@ -243,6 +308,16 @@ function parseStorageKeyPrefix(value: string | undefined, defaultValue: string):
   return prefix.replace(/^\/+|\/+$/g, "");
 }
 
+function parseQueueName(value: string | undefined, defaultValue: string): string {
+  const queueName = value?.trim() || defaultValue;
+
+  if (queueName.length > 128 || !QUEUE_NAME_PATTERN.test(queueName)) {
+    throw new Error("MEDIA_ANALYSIS_QUEUE_NAME must contain only letters, numbers, dots, underscores, colons, or hyphens");
+  }
+
+  return queueName;
+}
+
 function parseOptionalHeaderName(value: string | undefined): string | null {
   const trimmed = value?.trim();
   if (!trimmed) {
@@ -281,6 +356,15 @@ function parsePositiveNumber(fieldName: string, value: string | undefined, defau
 
   if (parsed > maxValue) {
     throw new Error(`${fieldName} must be less than or equal to ${maxValue}`);
+  }
+
+  return parsed;
+}
+
+function parseConfidenceThreshold(fieldName: string, value: string | undefined, defaultValue: number): number {
+  const parsed = value?.trim() ? Number(value) : defaultValue;
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`${fieldName} must be between 0 and 1`);
   }
 
   return parsed;

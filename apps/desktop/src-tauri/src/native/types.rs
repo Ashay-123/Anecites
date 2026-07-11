@@ -20,6 +20,13 @@ impl NativeCommandError {
             message: "Native monitoring is supported only on Windows".to_string(),
         }
     }
+
+    pub fn os_error(message: impl Into<String>) -> Self {
+        Self {
+            code: "OS_ERROR".to_string(),
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

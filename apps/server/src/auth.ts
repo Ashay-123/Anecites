@@ -15,7 +15,7 @@ export interface AuthenticatedPrincipal {
 export function requireAuth(config: ServerConfig): RequestHandler {
   const secret = new TextEncoder().encode(config.authJwtSecret);
 
-  return async (request, _response, next) => {
+  return async (request, response, next) => {
     try {
       const token = parseBearerToken(request.header("authorization"));
       const result = await jwtVerify(token, secret, {
@@ -28,6 +28,11 @@ export function requireAuth(config: ServerConfig): RequestHandler {
       if (typeof subject !== "string" || subject.trim().length === 0 || !isUserRole(role)) {
         throw new HttpError(401, "UNAUTHENTICATED", "Invalid bearer token");
       }
+
+      response.locals.authenticatedPrincipal = {
+        subject,
+        role,
+      } satisfies AuthenticatedPrincipal;
 
       next();
     } catch (error) {

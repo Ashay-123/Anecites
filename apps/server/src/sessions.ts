@@ -1,12 +1,19 @@
 import { Router, type Request, type Response } from "express";
 import { Prisma, type PrismaClient } from "@anecites/db";
 import {
+  createNativeRiskSignals,
+  isPrivilegedUserRole,
   isSessionState,
   isValidSessionTransition,
+  type NativeCaptureAffinityReport,
+  type NativeRiskSignalReport,
+  type NativeVirtualizationReport,
+  type NativeVirtualizationSignal,
   type ParticipantRole,
   type SessionState,
 } from "@anecites/shared";
 
+import { type AuthenticatedPrincipal } from "./auth.js";
 import { type ServerConfig } from "./config.js";
 import { HttpError } from "./http-error.js";
 import {
@@ -15,6 +22,14 @@ import {
   stopLiveKitRoomRecording,
   type LiveKitEgressClient,
 } from "./livekit.js";
+import {
+  createRiskSummary,
+  isRiskSummaryReviewStatus,
+  listRiskSummaries,
+  RISK_SUMMARY_REVIEW_STATUSES,
+  type RiskSummaryReviewStatus,
+  updateRiskSummaryReview,
+} from "./risk-summaries.js";
 
 type SessionWithParticipants = Prisma.SessionGetPayload<{
   include: {
@@ -31,6 +46,10 @@ type ParticipantWithUser = Prisma.ParticipantGetPayload<{
     user: true;
   };
 }>;
+
+type SessionRouteLocals = {
+  authenticatedPrincipal?: AuthenticatedPrincipal;
+};
 
 const API_TO_DB_SESSION_STATE = {
   created: "CREATED",
@@ -96,6 +115,42 @@ export function createSessionRouter(
       const session = await findSessionOrThrow(prisma, request.params.sessionId);
       response.status(200).json({
         session: serializeSession(session),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/:sessionId/risk-summaries", async (request, response, next) => {
+    try {
+      requireReviewerAccess(response);
+      const reviewStatus = parseOptionalReviewStatus(request.query.reviewStatus);
+      const riskSummaries = await listRiskSummaries(prisma, {
+        sessionId: requireParam(request.params.sessionId, "sessionId"),
+        ...(reviewStatus ? { reviewStatus } : {}),
+      });
+
+      response.status(200).json({
+        riskSummaries,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.patch("/:sessionId/risk-summaries/:riskSummaryId/review", async (request, response, next) => {
+    try {
+      const principal = requireReviewerAccess(response);
+      const body = parseRiskSummaryReviewBody(request.body);
+      const riskSummary = await updateRiskSummaryReview(prisma, {
+        sessionId: requireParam(request.params.sessionId, "sessionId"),
+        riskSummaryId: requireParam(request.params.riskSummaryId, "riskSummaryId"),
+        reviewerId: principal.subject,
+        reviewStatus: body.reviewStatus,
+      });
+
+      response.status(200).json({
+        riskSummary,
       });
     } catch (error) {
       next(error);
@@ -186,9 +241,17 @@ export function createSessionRouter(
         },
         liveKitEgressClient,
       );
+      const evidenceObject = await createRecordingEvidenceObject(prisma, config, {
+        sessionId: session.id,
+        recording,
+      });
 
       response.status(201).json({
-        recording,
+        recording: {
+          ...recording,
+          evidenceObjectId: evidenceObject.id,
+          storageKey: evidenceObject.storageKey,
+        },
       });
     } catch (error) {
       next(error);
@@ -203,6 +266,43 @@ export function createSessionRouter(
 
       response.status(200).json({
         recording,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sessionId/native-risk-report", async (request, response, next) => {
+    try {
+      const body = parseNativeRiskReportBody(request.body);
+      const session = await findSessionOrThrow(prisma, request.params.sessionId);
+      const participant = session.participants.find((candidate) => candidate.id === body.participantId && !candidate.leftAt);
+
+      if (!participant) {
+        throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Participant not found");
+      }
+
+      const signals = createNativeRiskSignals(body.nativeReport);
+
+      if (signals.length === 0) {
+        response.status(202).json({
+          signalCount: 0,
+          riskSummary: null,
+        });
+        return;
+      }
+
+      const riskSummary = await createRiskSummary(prisma, {
+        sessionId: session.id,
+        windowStartedAt: body.windowStartedAt,
+        windowEndedAt: body.windowEndedAt,
+        signals,
+        rationale: "Native monitoring snapshot",
+      });
+
+      response.status(201).json({
+        signalCount: signals.length,
+        riskSummary,
       });
     } catch (error) {
       next(error);
@@ -328,11 +428,141 @@ function parseLiveKitTokenBody(body: unknown): { participantId: string } {
   };
 }
 
+function parseNativeRiskReportBody(body: unknown): {
+  participantId: string;
+  windowStartedAt: string;
+  windowEndedAt: string;
+  nativeReport: NativeRiskSignalReport;
+} {
+  const record = requireRecord(body);
+  const participantId = requireNonEmptyString(record, "participantId");
+  const windowStartedAt = requireIsoTimestamp(record, "windowStartedAt");
+  const windowEndedAt = requireIsoTimestamp(record, "windowEndedAt");
+  const nativeReport = parseNativeRiskSignalReport(record.nativeReport);
+
+  return {
+    participantId,
+    windowStartedAt,
+    windowEndedAt,
+    nativeReport,
+  };
+}
+
+function parseRiskSummaryReviewBody(body: unknown): { reviewStatus: RiskSummaryReviewStatus } {
+  const record = requireRecord(body);
+
+  return {
+    reviewStatus: parseRequiredReviewStatus(record.reviewStatus),
+  };
+}
+
+function requireReviewerAccess(response: Response): AuthenticatedPrincipal {
+  const principal = (response.locals as SessionRouteLocals).authenticatedPrincipal;
+
+  if (!principal || !isPrivilegedUserRole(principal.role)) {
+    throw new HttpError(403, "FORBIDDEN", "Reviewer access is required");
+  }
+
+  return principal;
+}
+
+function parseOptionalReviewStatus(value: unknown): RiskSummaryReviewStatus | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string" || value.trim().length === 0 || !isRiskSummaryReviewStatus(value.trim())) {
+    throw new HttpError(
+      400,
+      "BAD_REQUEST",
+      `reviewStatus must be one of: ${RISK_SUMMARY_REVIEW_STATUSES.join(", ")}`,
+    );
+  }
+
+  return value.trim() as RiskSummaryReviewStatus;
+}
+
+function parseRequiredReviewStatus(value: unknown): RiskSummaryReviewStatus {
+  if (typeof value !== "string" || value.trim().length === 0 || !isRiskSummaryReviewStatus(value.trim())) {
+    throw new HttpError(
+      400,
+      "BAD_REQUEST",
+      `reviewStatus must be one of: ${RISK_SUMMARY_REVIEW_STATUSES.join(", ")}`,
+    );
+  }
+
+  return value.trim() as RiskSummaryReviewStatus;
+}
+
+function parseNativeRiskSignalReport(value: unknown): NativeRiskSignalReport {
+  const record = requireRecord(value);
+
+  return {
+    occurredAt: requireIsoTimestamp(record, "occurredAt"),
+    captureAffinityReports: optionalArray(record.captureAffinityReports).map(parseCaptureAffinityReport),
+    virtualizationReports: optionalArray(record.virtualizationReports).map(parseVirtualizationReport),
+  };
+}
+
+function parseCaptureAffinityReport(value: unknown): NativeCaptureAffinityReport {
+  const record = requireRecord(value);
+
+  return {
+    platform: requireNonEmptyString(record, "platform"),
+    windowId: requireNonEmptyString(record, "windowId"),
+    protectedFromCapture: requireBoolean(record, "protectedFromCapture"),
+  };
+}
+
+function parseVirtualizationReport(value: unknown): NativeVirtualizationReport {
+  const record = requireRecord(value);
+
+  return {
+    platform: requireNonEmptyString(record, "platform"),
+    signals: requireArray(record.signals, "signals").map(parseVirtualizationSignal),
+  };
+}
+
+function parseVirtualizationSignal(value: unknown): NativeVirtualizationSignal {
+  const record = requireRecord(value);
+  const detail = record.detail;
+
+  if (detail !== undefined && detail !== null && typeof detail !== "string") {
+    throw new HttpError(400, "BAD_REQUEST", "detail must be a string");
+  }
+
+  return {
+    name: requireNonEmptyString(record, "name"),
+    detected: requireBoolean(record, "detected"),
+    ...(typeof detail === "string" && detail.trim().length > 0 ? { detail: detail.trim() } : {}),
+  };
+}
+
 function requireRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new HttpError(400, "BAD_REQUEST", "Request body must be a JSON object");
   }
   return value as Record<string, unknown>;
+}
+
+function requireArray(value: unknown, fieldName: string): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new HttpError(400, "BAD_REQUEST", `${fieldName} must be an array`);
+  }
+
+  return value;
+}
+
+function optionalArray(value: unknown): unknown[] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    throw new HttpError(400, "BAD_REQUEST", "Native report field must be an array");
+  }
+
+  return value;
 }
 
 function requireNonEmptyString(record: Record<string, unknown>, fieldName: string): string {
@@ -349,6 +579,16 @@ function requireParam(value: string | undefined, fieldName: string): string {
   }
 
   return value.trim();
+}
+
+function requireBoolean(record: Record<string, unknown>, fieldName: string): boolean {
+  const value = record[fieldName];
+
+  if (typeof value !== "boolean") {
+    throw new HttpError(400, "BAD_REQUEST", `${fieldName} must be a boolean`);
+  }
+
+  return value;
 }
 
 function requireEmail(record: Record<string, unknown>, fieldName: string): string {
@@ -385,6 +625,17 @@ function optionalDate(record: Record<string, unknown>, fieldName: string): Date 
   return date;
 }
 
+function requireIsoTimestamp(record: Record<string, unknown>, fieldName: string): string {
+  const value = requireNonEmptyString(record, fieldName);
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    throw new HttpError(400, "BAD_REQUEST", `${fieldName} must be an ISO timestamp`);
+  }
+
+  return date.toISOString();
+}
+
 function transitionUpdateData(state: SessionState) {
   const now = new Date();
 
@@ -393,6 +644,48 @@ function transitionUpdateData(state: SessionState) {
     ...(state === "active" ? { startedAt: now } : {}),
     ...(state === "ended" || state === "cancelled" ? { endedAt: now } : {}),
   };
+}
+
+async function createRecordingEvidenceObject(
+  prisma: PrismaClient,
+  config: ServerConfig,
+  request: {
+    sessionId: string;
+    recording: {
+      egressId: string;
+      roomName: string;
+      status: number;
+      filepath?: string;
+    };
+  },
+) {
+  const storageBucket = requireConfiguredRecordingValue(config.livekitRecordingS3Bucket, "S3_BUCKET");
+  const storageKey = requireConfiguredRecordingValue(request.recording.filepath, "recording filepath");
+
+  return prisma.evidenceObject.create({
+    data: {
+      sessionId: request.sessionId,
+      kind: "SESSION_RECORDING",
+      storageBucket,
+      storageKey,
+      contentType: "video/mp4",
+      metadata: {
+        livekit: {
+          egressId: request.recording.egressId,
+          roomName: request.recording.roomName,
+          status: request.recording.status,
+        },
+      } satisfies Prisma.InputJsonValue,
+    },
+  });
+}
+
+function requireConfiguredRecordingValue(value: string | null | undefined, fieldName: string): string {
+  if (!value || value.trim().length === 0) {
+    throw new HttpError(503, "LIVEKIT_RECORDING_NOT_CONFIGURED", `${fieldName} is required for LiveKit recording`);
+  }
+
+  return value.trim();
 }
 
 function serializeSession(session: SessionWithParticipants) {

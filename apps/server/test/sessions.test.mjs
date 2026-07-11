@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { SignJWT, jwtVerify } from "jose";
 
 import { createPrismaClient } from "@anecites/db";
-import { createApp, loadServerConfig } from "../dist/index.js";
+import { RISK_SIGNAL_TYPES } from "@anecites/shared";
+import { createApp, createRiskSummary, loadServerConfig } from "../dist/index.js";
 
 const databaseUrl = "postgresql://anecites:anecites_dev_password@localhost:5432/anecites";
 const authJwtSecret = "test_auth_secret_minimum_32_characters";
@@ -55,10 +56,10 @@ async function jsonRequest(server, path, options = {}) {
   return { response, body };
 }
 
-async function authorizationHeader(role = "interviewer") {
+async function authorizationHeader(role = "interviewer", subject = `test-user-${testRunId}`) {
   const token = await new SignJWT({ role })
     .setProtectedHeader({ alg: "HS256" })
-    .setSubject(`test-user-${testRunId}`)
+    .setSubject(subject)
     .setIssuedAt()
     .setExpirationTime("5m")
     .sign(new TextEncoder().encode(authJwtSecret));
@@ -461,6 +462,8 @@ test("session routes start and stop LiveKit room recordings", async (t) => {
   assert.equal(startResult.body.recording.egressId, "egress-test-1");
   assert.equal(startResult.body.recording.roomName, `session-${sessionId}`);
   assert.equal(startResult.body.recording.status, 1);
+  assert.equal(typeof startResult.body.recording.evidenceObjectId, "string");
+  assert.match(startResult.body.recording.storageKey, new RegExp(`^recordings/livekit/${sessionId}/[0-9]+\\.mp4$`));
   assert.equal(fakeEgressClient.startCalls.length, 1);
   assert.equal(fakeEgressClient.startCalls[0].roomName, `session-${sessionId}`);
   assert.equal(fakeEgressClient.startCalls[0].options.layout, "grid");
@@ -472,6 +475,24 @@ test("session routes start and stop LiveKit room recordings", async (t) => {
   assert.equal(fakeEgressClient.startCalls[0].output.file.output.value.bucket, "anecites-dev");
   assert.equal(fakeEgressClient.startCalls[0].output.file.output.value.forcePathStyle, true);
 
+  const recordingEvidence = await prisma.evidenceObject.findUniqueOrThrow({
+    where: {
+      id: startResult.body.recording.evidenceObjectId,
+    },
+  });
+  assert.equal(recordingEvidence.sessionId, sessionId);
+  assert.equal(recordingEvidence.kind, "SESSION_RECORDING");
+  assert.equal(recordingEvidence.storageBucket, "anecites-dev");
+  assert.equal(recordingEvidence.storageKey, startResult.body.recording.storageKey);
+  assert.equal(recordingEvidence.contentType, "video/mp4");
+  assert.deepEqual(recordingEvidence.metadata, {
+    livekit: {
+      egressId: "egress-test-1",
+      roomName: `session-${sessionId}`,
+      status: 1,
+    },
+  });
+
   const stopResult = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording/egress-test-1/stop`, {
     method: "POST",
     headers: await authorizationHeader(),
@@ -482,6 +503,78 @@ test("session routes start and stop LiveKit room recordings", async (t) => {
   assert.deepEqual(fakeEgressClient.stopCalls, ["egress-test-1"]);
   assert.equal(stopResult.body.recording.egressId, "egress-test-1");
   assert.equal(stopResult.body.recording.status, 4);
+});
+
+test("session routes do not create recording evidence when LiveKit egress start fails", async (t) => {
+  const fakeEgressClient = {
+    async startRoomCompositeEgress() {
+      throw new Error("egress unavailable");
+    },
+  };
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: `${testRunId}-recording-egress-fail`,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const app = createApp(
+    testConfig({
+      LIVEKIT_URL: "ws://127.0.0.1:7880",
+      LIVEKIT_API_KEY: "test_livekit_key",
+      LIVEKIT_API_SECRET: "test_livekit_secret_minimum_32_characters",
+      S3_ENDPOINT: "http://127.0.0.1:9000",
+      S3_BUCKET: "anecites-dev",
+      S3_ACCESS_KEY_ID: "anecites",
+      S3_SECRET_ACCESS_KEY: "anecites_dev_password",
+      S3_REGION: "us-east-1",
+      S3_FORCE_PATH_STYLE: "true",
+      LIVEKIT_RECORDING_KEY_PREFIX: "recordings/livekit",
+    }),
+    {
+      logger: quietLogger(),
+      prisma,
+      liveKitEgressClient: fakeEgressClient,
+    },
+  );
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const createResult = await jsonRequest(server, "/sessions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      title: `${testRunId}-recording-egress-fail interview`,
+    }),
+  });
+  const sessionId = createResult.body.session.id;
+
+  const startResult = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording`, {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({}),
+  });
+
+  assert.equal(startResult.response.status, 502);
+
+  const evidenceCount = await prisma.evidenceObject.count({
+    where: {
+      sessionId,
+      kind: "SESSION_RECORDING",
+    },
+  });
+  assert.equal(evidenceCount, 0);
 });
 
 test("session routes fail closed when LiveKit recording storage is unavailable", async (t) => {
@@ -542,6 +635,485 @@ test("session routes fail closed when LiveKit recording storage is unavailable",
     error: {
       code: "LIVEKIT_RECORDING_NOT_CONFIGURED",
       message: "LiveKit recording storage is not configured",
+    },
+  });
+});
+
+test("session routes persist native monitoring risk reports", async (t) => {
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: `${testRunId}-native-risk`,
+        },
+      },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          endsWith: `.native-risk.${testRunId}@example.test`,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const app = createApp(testConfig(), {
+    logger: quietLogger(),
+    prisma,
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const createResult = await jsonRequest(server, "/sessions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      title: `${testRunId}-native-risk interview`,
+    }),
+  });
+  const sessionId = createResult.body.session.id;
+
+  const joinResult = await jsonRequest(server, `/sessions/${sessionId}/participants`, {
+    method: "POST",
+    headers: await authorizationHeader("candidate"),
+    body: JSON.stringify({
+      role: "candidate",
+      user: {
+        email: `candidate.native-risk.${testRunId}@example.test`,
+        displayName: "Candidate Native Risk",
+      },
+    }),
+  });
+  const participantId = joinResult.body.participant.id;
+
+  const nativeRiskResult = await jsonRequest(server, `/sessions/${sessionId}/native-risk-report`, {
+    method: "POST",
+    headers: await authorizationHeader("candidate"),
+    body: JSON.stringify({
+      participantId,
+      windowStartedAt: "2026-07-11T01:02:00.000Z",
+      windowEndedAt: "2026-07-11T01:03:00.000Z",
+      nativeReport: {
+        occurredAt: "2026-07-11T01:02:30.000Z",
+        captureAffinityReports: [
+          {
+            platform: "windows",
+            windowId: "1002",
+            protectedFromCapture: true,
+          },
+        ],
+        virtualizationReports: [
+          {
+            platform: "windows",
+            signals: [
+              {
+                name: "cpuid.hypervisor_present",
+                detected: true,
+                detail: "vendor=Microsoft Hv",
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  });
+
+  assert.equal(nativeRiskResult.response.status, 201);
+  assert.equal(nativeRiskResult.body.signalCount, 2);
+  assert.equal(nativeRiskResult.body.riskSummary.sessionId, sessionId);
+  assert.equal(nativeRiskResult.body.riskSummary.reviewStatus, "pending_review");
+  assert.equal(nativeRiskResult.body.riskSummary.score, 0.6);
+  assert.deepEqual(nativeRiskResult.body.riskSummary.signalBreakdown, [
+    {
+      category: "native",
+      count: 2,
+      maxWeight: 0.6,
+      types: ["risk.native.capture_affinity", "risk.native.vm_signal"],
+    },
+  ]);
+
+  const persisted = await prisma.riskSummary.findUniqueOrThrow({
+    where: {
+      id: nativeRiskResult.body.riskSummary.id,
+    },
+  });
+  assert.equal(persisted.reviewStatus, "PENDING_REVIEW");
+});
+
+test("session routes ignore clean native monitoring reports", async (t) => {
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: `${testRunId}-native-clean`,
+        },
+      },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          endsWith: `.native-clean.${testRunId}@example.test`,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const app = createApp(testConfig(), {
+    logger: quietLogger(),
+    prisma,
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const createResult = await jsonRequest(server, "/sessions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      title: `${testRunId}-native-clean interview`,
+    }),
+  });
+  const sessionId = createResult.body.session.id;
+
+  const joinResult = await jsonRequest(server, `/sessions/${sessionId}/participants`, {
+    method: "POST",
+    headers: await authorizationHeader("candidate"),
+    body: JSON.stringify({
+      role: "candidate",
+      user: {
+        email: `candidate.native-clean.${testRunId}@example.test`,
+        displayName: "Candidate Native Clean",
+      },
+    }),
+  });
+
+  const nativeRiskResult = await jsonRequest(server, `/sessions/${sessionId}/native-risk-report`, {
+    method: "POST",
+    headers: await authorizationHeader("candidate"),
+    body: JSON.stringify({
+      participantId: joinResult.body.participant.id,
+      windowStartedAt: "2026-07-11T01:02:00.000Z",
+      windowEndedAt: "2026-07-11T01:03:00.000Z",
+      nativeReport: {
+        occurredAt: "2026-07-11T01:02:30.000Z",
+        captureAffinityReports: [
+          {
+            platform: "windows",
+            windowId: "1001",
+            protectedFromCapture: false,
+          },
+        ],
+        virtualizationReports: [
+          {
+            platform: "windows",
+            signals: [
+              {
+                name: "cpuid.hypervisor_present",
+                detected: false,
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  });
+
+  assert.equal(nativeRiskResult.response.status, 202);
+  assert.deepEqual(nativeRiskResult.body, {
+    signalCount: 0,
+    riskSummary: null,
+  });
+});
+
+test("session routes list risk summaries for privileged reviewers", async (t) => {
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: `${testRunId}-risk-review`,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const app = createApp(testConfig(), {
+    logger: quietLogger(),
+    prisma,
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const createResult = await jsonRequest(server, "/sessions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      title: `${testRunId}-risk-review interview`,
+    }),
+  });
+  const sessionId = createResult.body.session.id;
+
+  const olderSummary = await createRiskSummary(prisma, {
+    sessionId,
+    windowStartedAt: "2026-07-11T01:00:00.000Z",
+    windowEndedAt: "2026-07-11T01:01:00.000Z",
+    signals: [
+      {
+        type: RISK_SIGNAL_TYPES.editorAtomicInsert,
+        weight: 0.8,
+        occurredAt: "2026-07-11T01:00:10.000Z",
+      },
+    ],
+  });
+  const newerSummary = await createRiskSummary(prisma, {
+    sessionId,
+    windowStartedAt: "2026-07-11T01:02:00.000Z",
+    windowEndedAt: "2026-07-11T01:03:00.000Z",
+    signals: [
+      {
+        type: RISK_SIGNAL_TYPES.nativeVmSignal,
+        weight: 0.5,
+        occurredAt: "2026-07-11T01:02:30.000Z",
+      },
+    ],
+  });
+
+  const listResult = await jsonRequest(server, `/sessions/${sessionId}/risk-summaries`, {
+    headers: await authorizationHeader("reviewer"),
+  });
+
+  assert.equal(listResult.response.status, 200);
+  assert.deepEqual(
+    listResult.body.riskSummaries.map((summary) => summary.id),
+    [newerSummary.id, olderSummary.id],
+  );
+  assert.equal(listResult.body.riskSummaries[0].reviewStatus, "pending_review");
+  assert.equal("rawEvidence" in listResult.body.riskSummaries[0], false);
+
+  const invalidFilterResult = await jsonRequest(server, `/sessions/${sessionId}/risk-summaries?reviewStatus=invalid`, {
+    headers: await authorizationHeader("reviewer"),
+  });
+
+  assert.equal(invalidFilterResult.response.status, 400);
+});
+
+test("session routes reject candidate access to reviewer risk summaries", async (t) => {
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: `${testRunId}-risk-forbidden`,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const app = createApp(testConfig(), {
+    logger: quietLogger(),
+    prisma,
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const createResult = await jsonRequest(server, "/sessions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      title: `${testRunId}-risk-forbidden interview`,
+    }),
+  });
+
+  const listResult = await jsonRequest(server, `/sessions/${createResult.body.session.id}/risk-summaries`, {
+    headers: await authorizationHeader("candidate"),
+  });
+
+  assert.equal(listResult.response.status, 403);
+  assert.deepEqual(listResult.body, {
+    error: {
+      code: "FORBIDDEN",
+      message: "Reviewer access is required",
+    },
+  });
+});
+
+test("session routes allow privileged reviewer users to update risk summary review status", async (t) => {
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: `${testRunId}-risk-action`,
+        },
+      },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          endsWith: `.risk-action.${testRunId}@example.test`,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const reviewer = await prisma.user.create({
+    data: {
+      email: `reviewer.risk-action.${testRunId}@example.test`,
+      displayName: "Reviewer Action",
+      role: "REVIEWER",
+    },
+  });
+  const app = createApp(testConfig(), {
+    logger: quietLogger(),
+    prisma,
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const createResult = await jsonRequest(server, "/sessions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      title: `${testRunId}-risk-action interview`,
+    }),
+  });
+  const sessionId = createResult.body.session.id;
+  const summary = await createRiskSummary(prisma, {
+    sessionId,
+    windowStartedAt: "2026-07-11T01:00:00.000Z",
+    windowEndedAt: "2026-07-11T01:01:00.000Z",
+    signals: [
+      {
+        type: RISK_SIGNAL_TYPES.nativeVmSignal,
+        weight: 0.5,
+        occurredAt: "2026-07-11T01:00:30.000Z",
+      },
+    ],
+  });
+
+  const reviewResult = await jsonRequest(server, `/sessions/${sessionId}/risk-summaries/${summary.id}/review`, {
+    method: "PATCH",
+    headers: await authorizationHeader("reviewer", reviewer.id),
+    body: JSON.stringify({
+      reviewStatus: "needs_more_context",
+    }),
+  });
+
+  assert.equal(reviewResult.response.status, 200);
+  assert.equal(reviewResult.body.riskSummary.id, summary.id);
+  assert.equal(reviewResult.body.riskSummary.reviewStatus, "needs_more_context");
+  assert.equal(reviewResult.body.riskSummary.reviewerId, reviewer.id);
+  assert.equal(typeof reviewResult.body.riskSummary.reviewedAt, "string");
+  assert.equal(reviewResult.body.riskSummary.score, summary.score);
+  assert.deepEqual(reviewResult.body.riskSummary.signalBreakdown, summary.signalBreakdown);
+
+  const invalidStatusResult = await jsonRequest(server, `/sessions/${sessionId}/risk-summaries/${summary.id}/review`, {
+    method: "PATCH",
+    headers: await authorizationHeader("reviewer", reviewer.id),
+    body: JSON.stringify({
+      reviewStatus: "invalid",
+    }),
+  });
+
+  assert.equal(invalidStatusResult.response.status, 400);
+});
+
+test("session routes reject candidate review status updates", async (t) => {
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: `${testRunId}-risk-action-forbidden`,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const app = createApp(testConfig(), {
+    logger: quietLogger(),
+    prisma,
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const createResult = await jsonRequest(server, "/sessions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      title: `${testRunId}-risk-action-forbidden interview`,
+    }),
+  });
+  const sessionId = createResult.body.session.id;
+  const summary = await createRiskSummary(prisma, {
+    sessionId,
+    windowStartedAt: "2026-07-11T01:00:00.000Z",
+    windowEndedAt: "2026-07-11T01:01:00.000Z",
+    signals: [
+      {
+        type: RISK_SIGNAL_TYPES.nativeVmSignal,
+        weight: 0.5,
+        occurredAt: "2026-07-11T01:00:30.000Z",
+      },
+    ],
+  });
+
+  const reviewResult = await jsonRequest(server, `/sessions/${sessionId}/risk-summaries/${summary.id}/review`, {
+    method: "PATCH",
+    headers: await authorizationHeader("candidate"),
+    body: JSON.stringify({
+      reviewStatus: "dismissed",
+    }),
+  });
+
+  assert.equal(reviewResult.response.status, 403);
+  assert.deepEqual(reviewResult.body, {
+    error: {
+      code: "FORBIDDEN",
+      message: "Reviewer access is required",
     },
   });
 });
