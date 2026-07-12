@@ -6,7 +6,7 @@ import { loadServerConfig } from "./config.js";
 import { consoleLogger } from "./logger.js";
 
 export { createApp } from "./app.js";
-export { requireAuth, type AuthenticatedPrincipal } from "./auth.js";
+export { issueAuthToken, requireAuth, type AuthenticatedPrincipal } from "./auth.js";
 export { createCodeExecutionRouter } from "./code-executions.js";
 export { type FetchLike } from "./code-execution-provider.js";
 export { loadServerConfig, type CodeExecutionProviderName, type ServerConfig, type NodeEnv } from "./config.js";
@@ -23,6 +23,7 @@ export {
   type LiveKitRecordingInfo,
   type LiveKitRecordingResponse,
 } from "./livekit.js";
+export { createLocalDemoRouter } from "./local-demo.js";
 export { consoleLogger, type Logger } from "./logger.js";
 export {
   createRiskSummary,

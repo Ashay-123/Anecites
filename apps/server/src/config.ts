@@ -7,6 +7,7 @@ export interface ServerConfig {
   apiHost: string;
   apiPort: number;
   appOrigin: string;
+  localDemoEnabled: boolean;
   databaseUrl: string;
   redisUrl: string;
   rabbitmqUrl: string;
@@ -66,6 +67,8 @@ const QUEUE_NAME_PATTERN = /^[A-Za-z0-9._:-]+$/;
 
 export function loadServerConfig(env: EnvironmentInput = process.env): ServerConfig {
   const nodeEnv = parseNodeEnv(env.NODE_ENV);
+  const apiHost = env.API_HOST?.trim() || "0.0.0.0";
+  const localDemoEnabled = parseBoolean("LOCAL_DEMO_ENABLED", env.LOCAL_DEMO_ENABLED, false);
   const codeExecutionProvider = parseCodeExecutionProvider(env.CODE_EXECUTION_PROVIDER);
   const judge0AuthToken = parseOptionalString(env.JUDGE0_AUTHN_TOKEN);
   const judge0AuthHeader = parseOptionalHeaderName(env.JUDGE0_AUTHN_HEADER) ?? (judge0AuthToken ? "X-Judge0-Token" : null);
@@ -97,11 +100,16 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
     );
   }
 
+  if (localDemoEnabled && !isLoopbackHost(apiHost)) {
+    throw new Error("LOCAL_DEMO_ENABLED requires API_HOST to be a loopback address");
+  }
+
   return {
     nodeEnv,
-    apiHost: env.API_HOST?.trim() || "0.0.0.0",
+    apiHost,
     apiPort: parsePort(env.API_PORT ?? "3000"),
     appOrigin: parseRequiredUrl("APP_ORIGIN", env.APP_ORIGIN),
+    localDemoEnabled,
     databaseUrl: parseRequiredUrl("DATABASE_URL", env.DATABASE_URL),
     redisUrl: parseRequiredUrl("REDIS_URL", env.REDIS_URL),
     rabbitmqUrl: parseRequiredUrl("RABBITMQ_URL", env.RABBITMQ_URL),
@@ -301,6 +309,10 @@ function parseBoolean(fieldName: string, value: string | undefined, defaultValue
   }
 
   throw new Error(`${fieldName} must be true or false`);
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
 
 function parseStorageKeyPrefix(value: string | undefined, defaultValue: string): string {

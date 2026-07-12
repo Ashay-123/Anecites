@@ -5,20 +5,19 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { App } from "../dist/App.js";
 
-test("desktop app renders the interview shell", () => {
+test("desktop app starts with the basic local demo host and join choices", () => {
   const html = renderToStaticMarkup(React.createElement(App));
 
-  assert.match(html, /data-anecites-desktop="interview-shell"/);
-  assert.match(html, /Session/);
-  assert.match(html, /Candidate editor/);
-  assert.match(html, /Video call/);
-  assert.match(html, /Connect video/);
-  assert.match(html, /Check screen/);
-  assert.match(html, /Share screen/);
-  assert.match(html, /Native monitor/);
-  assert.match(html, /Run native check/);
-  assert.match(html, /Reviewer queue/);
-  assert.match(html, /Refresh reviews/);
-  assert.match(html, /Output/);
-  assert.match(html, /data-anecites-editor="monaco-collab"/);
+  assert.match(html, /data-anecites-desktop="landing-page"/);
+  assert.match(html, /A fair interview for everyone in it/);
+  assert.match(html, /Anecites Agent/);
+  assert.match(html, /Built to be minimal, by design/);
+  assert.match(html, /Join interview/);
+  assert.match(html, /Host interview/);
+  assert.doesNotMatch(html, /API URL/);
+  assert.doesNotMatch(html, /Collaboration URL/);
+  assert.doesNotMatch(html, /Session ID/);
+  assert.doesNotMatch(html, /Document ID/);
+  assert.doesNotMatch(html, /Participant ID/);
+  assert.doesNotMatch(html, /Auth token/);
 });

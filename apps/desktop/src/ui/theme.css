@@ -1,0 +1,108 @@
+:root {
+  color-scheme: light;
+  color: oklch(0.129 0.042 264.695);
+  background: oklch(1 0 0);
+  font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 16px;
+  letter-spacing: 0;
+
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.129 0.042 264.695);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.129 0.042 264.695);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.129 0.042 264.695);
+  --primary: oklch(0.208 0.042 265.755);
+  --primary-hover: oklch(0.279 0.041 260.031);
+  --primary-active: oklch(0.129 0.042 264.695);
+  --primary-foreground: oklch(0.984 0.003 247.858);
+  --secondary: oklch(0.968 0.007 247.896);
+  --secondary-hover: oklch(0.929 0.013 255.508);
+  --secondary-foreground: oklch(0.208 0.042 265.755);
+  --muted: oklch(0.968 0.007 247.896);
+  --muted-foreground: oklch(0.554 0.046 257.417);
+  --accent: oklch(0.968 0.007 247.896);
+  --accent-foreground: oklch(0.208 0.042 265.755);
+  --border: oklch(0.929 0.013 255.508);
+  --input: oklch(0.929 0.013 255.508);
+  --ring: oklch(0.704 0.04 256.788);
+  --surface-raised: oklch(1 0 0);
+  --surface-sunken: #f5f5f7;
+  --sidebar: oklch(0.984 0.003 247.858);
+  --sidebar-accent: oklch(0.968 0.007 247.896);
+  --sidebar-border: oklch(0.929 0.013 255.508);
+  --risk-low: oklch(0.58 0.13 155);
+  --risk-medium: oklch(0.66 0.14 85);
+  --risk-high: oklch(0.62 0.15 55);
+  --risk-critical: oklch(0.577 0.245 27.325);
+  --risk-critical-surface: oklch(0.96 0.025 27.325);
+  --risk-critical-text: oklch(0.43 0.18 27.325);
+  --overlay: rgb(15 23 42 / 42%);
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 18px;
+  --focus-ring: 0 0 0 2px var(--background), 0 0 0 4px var(--ring);
+  --font-mono: "Geist Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: var(--background);
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  overflow-x: hidden;
+  background: var(--background);
+  color: var(--foreground);
+  line-height: 1.5;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  letter-spacing: 0;
+}
+
+button,
+a,
+input,
+select,
+textarea,
+[tabindex]:not([tabindex="-1"]) {
+  outline: none;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:not([tabindex="-1"]):focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+::selection {
+  background: color-mix(in oklch, var(--primary) 42%, transparent);
+  color: var(--foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import {
   MonacoCollabEditor,
+  createEditorPasteBlockedTelemetryEvent,
   createEditorYjsDocument,
 } from "../dist/index.js";
 
@@ -24,82 +25,51 @@ test("MonacoCollabEditor renders a stable editor host element", () => {
   assert.match(html, /data-anecites-editor="monaco-collab"/);
   assert.match(html, /data-document-id="document-a"/);
   assert.match(html, /data-language="javascript"/);
+  assert.match(html, /class="editor-monaco-surface"/);
+  assert.match(html, /data-monaco-ready="false"/);
+  assert.match(html, /class="editor-code-frame"/);
+  assert.match(html, /class="editor-line-gutter"/);
+  assert.match(html, /data-anecites-editor-input="true"/);
+  assert.match(html, /data-fallback-active="true"/);
+  assert.match(html, /hello/);
 
   document.destroy();
 });
 
-test("MonacoCollabEditor prevents paste and emits paste-blocked telemetry", () => {
+test("editor paste blocked telemetry includes session and participant context", () => {
   const document = createEditorYjsDocument({
     documentId: "document-a",
   });
-  const telemetryEvents = [];
-  const element = MonacoCollabEditor({
-    document,
-    language: "javascript",
-    telemetry: {
-      sessionId: "session-a",
-      participantId: "candidate-a",
-      now: () => new Date("2026-01-01T00:00:00.000Z"),
-      onEvent(event) {
-        telemetryEvents.push(event);
-      },
-    },
+  const event = createEditorPasteBlockedTelemetryEvent(document, {
+    sessionId: "session-a",
+    participantId: "candidate-a",
+    now: () => new Date("2026-01-01T00:00:00.000Z"),
+    onEvent() {},
   });
-  const pasteEvent = {
-    preventDefaultCalled: false,
-    preventDefault() {
-      this.preventDefaultCalled = true;
-    },
-  };
 
-  element.props.onPaste(pasteEvent);
-
-  assert.equal(pasteEvent.preventDefaultCalled, true);
-  assert.equal(telemetryEvents.length, 1);
-  assert.equal(telemetryEvents[0].type, "editor.paste_blocked");
-  assert.equal(telemetryEvents[0].sessionId, "session-a");
-  assert.equal(telemetryEvents[0].participantId, "candidate-a");
-  assert.equal(telemetryEvents[0].documentId, "document-a");
-  assert.equal(telemetryEvents[0].occurredAt, "2026-01-01T00:00:00.000Z");
-  assert.equal(telemetryEvents[0].source, "paste_event");
+  assert.equal(event.type, "editor.paste_blocked");
+  assert.equal(event.sessionId, "session-a");
+  assert.equal(event.participantId, "candidate-a");
+  assert.equal(event.documentId, "document-a");
+  assert.equal(event.occurredAt, "2026-01-01T00:00:00.000Z");
+  assert.equal(event.source, "paste_event");
 
   document.destroy();
 });
 
-test("MonacoCollabEditor prevents context-menu paste path and emits paste-blocked telemetry", () => {
+test("MonacoCollabEditor marks paste and context-menu paste paths as disabled", () => {
   const document = createEditorYjsDocument({
     documentId: "document-a",
   });
-  const telemetryEvents = [];
-  const element = MonacoCollabEditor({
-    document,
-    language: "javascript",
-    telemetry: {
-      sessionId: "session-a",
-      participantId: "candidate-a",
-      now: () => new Date("2026-01-01T00:00:00.000Z"),
-      onEvent(event) {
-        telemetryEvents.push(event);
-      },
-    },
-  });
-  const contextMenuEvent = {
-    preventDefaultCalled: false,
-    preventDefault() {
-      this.preventDefaultCalled = true;
-    },
-  };
+  const html = renderToStaticMarkup(
+    React.createElement(MonacoCollabEditor, {
+      document,
+      language: "javascript",
+      disablePaste: true,
+    }),
+  );
 
-  element.props.onContextMenu(contextMenuEvent);
-
-  assert.equal(contextMenuEvent.preventDefaultCalled, true);
-  assert.equal(telemetryEvents.length, 1);
-  assert.equal(telemetryEvents[0].type, "editor.paste_blocked");
-  assert.equal(telemetryEvents[0].sessionId, "session-a");
-  assert.equal(telemetryEvents[0].participantId, "candidate-a");
-  assert.equal(telemetryEvents[0].documentId, "document-a");
-  assert.equal(telemetryEvents[0].occurredAt, "2026-01-01T00:00:00.000Z");
-  assert.equal(telemetryEvents[0].source, "paste_event");
+  assert.match(html, /data-paste-disabled="true"/);
 
   document.destroy();
 });

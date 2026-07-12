@@ -3,8 +3,13 @@ import test from "node:test";
 
 import {
   collectNativeMonitoringSnapshot,
+  isNativeMonitoringRuntimeAvailable,
   submitNativeMonitoringSnapshot,
 } from "../dist/native.js";
+
+test("isNativeMonitoringRuntimeAvailable is false outside the Tauri runtime", () => {
+  assert.equal(isNativeMonitoringRuntimeAvailable(), false);
+});
 
 test("collectNativeMonitoringSnapshot gathers timestamped native risk reports", async () => {
   const calls = [];

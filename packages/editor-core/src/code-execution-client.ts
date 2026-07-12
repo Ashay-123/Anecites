@@ -8,6 +8,9 @@ export interface CodeExecutionSubmission {
   languageId: number;
   sourceCode: string;
   stdin?: string;
+  sessionId?: string;
+  documentId?: string;
+  participantId?: string;
 }
 
 export interface CodeExecutionStatus {
@@ -85,16 +88,30 @@ export function createCodeExecutionClient(
   };
 }
 
-function normalizeSubmission(submission: CodeExecutionSubmission): Required<CodeExecutionSubmission> {
+function normalizeSubmission(submission: CodeExecutionSubmission): CodeExecutionSubmission & { stdin: string } {
   if (!Number.isSafeInteger(submission.languageId) || submission.languageId < 1) {
     throw new Error("languageId must be a positive integer");
   }
 
-  return {
+  const normalized: CodeExecutionSubmission & { stdin: string } = {
     languageId: submission.languageId,
     sourceCode: requireNonEmptyString("sourceCode", submission.sourceCode),
     stdin: submission.stdin ?? "",
   };
+
+  if (submission.sessionId !== undefined) {
+    normalized.sessionId = requireNonEmptyString("sessionId", submission.sessionId);
+  }
+
+  if (submission.documentId !== undefined) {
+    normalized.documentId = requireNonEmptyString("documentId", submission.documentId);
+  }
+
+  if (submission.participantId !== undefined) {
+    normalized.participantId = requireNonEmptyString("participantId", submission.participantId);
+  }
+
+  return normalized;
 }
 
 function toClientError(status: number, body: unknown): CodeExecutionClientError {

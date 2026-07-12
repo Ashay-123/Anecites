@@ -76,6 +76,10 @@ const REQUIRED_NATIVE_CAPABILITIES = [
   "virtualization_detection",
 ] as const;
 
+export function isNativeMonitoringRuntimeAvailable(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
 export async function collectNativeMonitoringSnapshot(
   options: NativeMonitoringOptions = {},
   invokeImpl: NativeInvoke = tauriInvoke,

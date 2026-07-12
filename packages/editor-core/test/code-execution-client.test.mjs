@@ -65,6 +65,37 @@ test("code execution client defaults stdin to an empty string", async () => {
   });
 });
 
+test("code execution client includes optional persistence context", async () => {
+  const fakeFetch = createFakeFetch({
+    status: 201,
+    body: {
+      execution: acceptedExecution(),
+    },
+  });
+  const client = createCodeExecutionClient({
+    baseUrl: "http://api.test",
+    token: "jwt-token",
+    fetch: fakeFetch.fetchImpl,
+  });
+
+  await client.execute({
+    languageId: 63,
+    sourceCode: "console.log('ok')",
+    sessionId: "session-a",
+    documentId: "document-a",
+    participantId: "participant-a",
+  });
+
+  assert.deepEqual(fakeFetch.calls[0].body, {
+    languageId: 63,
+    sourceCode: "console.log('ok')",
+    stdin: "",
+    sessionId: "session-a",
+    documentId: "document-a",
+    participantId: "participant-a",
+  });
+});
+
 test("code execution client maps proxy errors to typed errors", async () => {
   const fakeFetch = createFakeFetch({
     status: 504,

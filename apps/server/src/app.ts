@@ -12,6 +12,7 @@ import { createCodeExecutionRouter } from "./code-executions.js";
 import { type ServerConfig } from "./config.js";
 import { isHttpError } from "./http-error.js";
 import { type LiveKitEgressClient } from "./livekit.js";
+import { createLocalDemoRouter } from "./local-demo.js";
 import { consoleLogger, type Logger } from "./logger.js";
 import { createSessionRouter } from "./sessions.js";
 
@@ -47,8 +48,12 @@ export function createApp(config: ServerConfig, options: CreateAppOptions = {}) 
     });
   });
 
+  if (config.localDemoEnabled) {
+    app.use("/local-demo", createLocalDemoRouter(prisma, config));
+  }
+
   app.use("/sessions", requireAuth(config), createSessionRouter(prisma, config, options.liveKitEgressClient));
-  app.use("/code-executions", requireAuth(config), createCodeExecutionRouter(config, fetchImpl));
+  app.use("/code-executions", requireAuth(config), createCodeExecutionRouter(prisma, config, fetchImpl));
 
   app.use((_request: Request, response: Response) => {
     response.status(404).json({

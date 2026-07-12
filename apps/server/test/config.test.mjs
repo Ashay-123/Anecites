@@ -8,6 +8,7 @@ const validEnv = {
   API_HOST: "127.0.0.1",
   API_PORT: "3000",
   APP_ORIGIN: "http://localhost:5173",
+  LOCAL_DEMO_ENABLED: "false",
   DATABASE_URL: "postgresql://anecites:anecites_dev_password@localhost:5432/anecites",
   REDIS_URL: "redis://localhost:6379",
   RABBITMQ_URL: "amqp://anecites:anecites_dev_password@localhost:5672",
@@ -43,6 +44,7 @@ test("loadServerConfig accepts the required API server environment", () => {
     apiHost: "127.0.0.1",
     apiPort: 3000,
     appOrigin: "http://localhost:5173",
+    localDemoEnabled: false,
     databaseUrl: validEnv.DATABASE_URL,
     redisUrl: validEnv.REDIS_URL,
     rabbitmqUrl: validEnv.RABBITMQ_URL,
@@ -101,6 +103,26 @@ test("loadServerConfig fails closed when required values are missing", () => {
   assert.throws(
     () => loadServerConfig(env),
     /DATABASE_URL is required/,
+  );
+});
+
+test("loadServerConfig restricts local demo mode to loopback hosts", () => {
+  assert.equal(
+    loadServerConfig({
+      ...validEnv,
+      LOCAL_DEMO_ENABLED: "true",
+    }).localDemoEnabled,
+    true,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        API_HOST: "0.0.0.0",
+        LOCAL_DEMO_ENABLED: "true",
+      }),
+    /LOCAL_DEMO_ENABLED requires API_HOST to be a loopback address/,
   );
 });
 

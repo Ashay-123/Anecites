@@ -15,11 +15,33 @@ export interface LiveKitConnectionDetails {
 export interface ConnectableLiveKitRoom {
   connect(url: string, token: string): Promise<void>;
   disconnect?(): Promise<void> | void;
-  on?(event: string, handler: () => void): unknown;
-  off?(event: string, handler: () => void): unknown;
+  on?(event: string, handler: (...args: unknown[]) => void): unknown;
+  off?(event: string, handler: (...args: unknown[]) => void): unknown;
   localParticipant?: {
+    enableCameraAndMicrophone?(): Promise<unknown>;
+    setCameraEnabled?(enabled: boolean): Promise<unknown>;
+    setMicrophoneEnabled?(enabled: boolean): Promise<unknown>;
     setScreenShareEnabled?(enabled: boolean): Promise<unknown>;
   };
+}
+
+export interface LiveKitAttachableTrack {
+  kind?: string;
+  sid?: string;
+  attach?(): HTMLMediaElement;
+  detach?(): HTMLMediaElement[] | void;
+}
+
+export interface LiveKitTrackPublication {
+  kind?: string;
+  source?: string;
+  trackSid?: string;
+  track?: LiveKitAttachableTrack | null;
+}
+
+export interface LiveKitParticipant {
+  identity?: string;
+  name?: string;
 }
 
 type FetchLike = typeof fetch;
@@ -44,6 +66,26 @@ export type LiveKitMediaMode = "normal" | "audio-priority";
 export interface LiveKitRoomEventHandlers {
   onConnectionStatus(status: LiveKitConnectionStatus): void;
   onMediaMode(mode: LiveKitMediaMode): void;
+  onTrackSubscribed?(
+    track: LiveKitAttachableTrack,
+    publication: LiveKitTrackPublication,
+    participant: LiveKitParticipant,
+  ): void;
+  onTrackUnsubscribed?(
+    track: LiveKitAttachableTrack,
+    publication: LiveKitTrackPublication,
+    participant: LiveKitParticipant,
+  ): void;
+  onLocalTrackPublished?(
+    track: LiveKitAttachableTrack,
+    publication: LiveKitTrackPublication,
+    participant: LiveKitParticipant,
+  ): void;
+  onLocalTrackUnpublished?(
+    track: LiveKitAttachableTrack,
+    publication: LiveKitTrackPublication,
+    participant: LiveKitParticipant,
+  ): void;
 }
 
 export async function requestLiveKitToken(
@@ -85,6 +127,26 @@ export async function connectLiveKitRoom(
   return room;
 }
 
+export async function publishLiveKitCameraAndMicrophone(room: ConnectableLiveKitRoom): Promise<void> {
+  const localParticipant = room.localParticipant;
+
+  if (!localParticipant) {
+    throw new Error("LiveKit room does not support local media");
+  }
+
+  if (localParticipant.enableCameraAndMicrophone) {
+    await localParticipant.enableCameraAndMicrophone();
+    return;
+  }
+
+  if (!localParticipant.setCameraEnabled || !localParticipant.setMicrophoneEnabled) {
+    throw new Error("LiveKit room does not support camera and microphone publishing");
+  }
+
+  await localParticipant.setCameraEnabled(true);
+  await localParticipant.setMicrophoneEnabled(true);
+}
+
 export async function runDisplayMediaSelfCheck(
   getDisplayMedia: DisplayMediaGetter | null = defaultDisplayMediaGetter(),
 ): Promise<DisplayMediaSelfCheckResult> {
@@ -123,6 +185,24 @@ export async function setLiveKitScreenShare(room: ConnectableLiveKitRoom, enable
   await setScreenShareEnabled.call(room.localParticipant, enabled);
 }
 
+export function attachLiveKitMediaTrack(track: LiveKitAttachableTrack): HTMLMediaElement {
+  if (!track.attach) {
+    throw new Error("LiveKit track does not support media attachment");
+  }
+
+  const element = track.attach();
+  element.autoplay = true;
+  element.controls = false;
+  if (typeof HTMLVideoElement !== "undefined" && element instanceof HTMLVideoElement) {
+    element.playsInline = true;
+  }
+  return element;
+}
+
+export function detachLiveKitMediaTrack(track: LiveKitAttachableTrack): void {
+  track.detach?.();
+}
+
 export function observeLiveKitRoomEvents(
   room: ConnectableLiveKitRoom,
   handlers: LiveKitRoomEventHandlers,
@@ -147,18 +227,73 @@ export function observeLiveKitRoomEvents(
     handlers.onConnectionStatus("disconnected");
     handlers.onMediaMode("audio-priority");
   };
+  const onTrackSubscribed = (...args: unknown[]) => {
+    const [track, publication, participant] = args as [
+      LiveKitAttachableTrack,
+      LiveKitTrackPublication,
+      LiveKitParticipant,
+    ];
+
+    if (isRenderableMediaTrack(track, publication)) {
+      handlers.onTrackSubscribed?.(track, publication, participant);
+    }
+  };
+  const onTrackUnsubscribed = (...args: unknown[]) => {
+    const [track, publication, participant] = args as [
+      LiveKitAttachableTrack,
+      LiveKitTrackPublication,
+      LiveKitParticipant,
+    ];
+
+    if (isRenderableMediaTrack(track, publication)) {
+      handlers.onTrackUnsubscribed?.(track, publication, participant);
+    }
+  };
+  const onLocalTrackPublished = (...args: unknown[]) => {
+    const [publication, participant] = args as [LiveKitTrackPublication, LiveKitParticipant];
+    const track = publication.track;
+
+    if (track && isRenderableMediaTrack(track, publication)) {
+      handlers.onLocalTrackPublished?.(track, publication, participant);
+    }
+  };
+  const onLocalTrackUnpublished = (...args: unknown[]) => {
+    const [publication, participant] = args as [LiveKitTrackPublication, LiveKitParticipant];
+    const track = publication.track;
+
+    if (track && isRenderableMediaTrack(track, publication)) {
+      handlers.onLocalTrackUnpublished?.(track, publication, participant);
+    }
+  };
 
   room.on("signalReconnecting", onSignalReconnecting);
   room.on("reconnecting", onReconnecting);
   room.on("reconnected", onReconnected);
   room.on("disconnected", onDisconnected);
+  room.on("trackSubscribed", onTrackSubscribed);
+  room.on("trackUnsubscribed", onTrackUnsubscribed);
+  room.on("localTrackPublished", onLocalTrackPublished);
+  room.on("localTrackUnpublished", onLocalTrackUnpublished);
 
   return () => {
     room.off?.("signalReconnecting", onSignalReconnecting);
     room.off?.("reconnecting", onReconnecting);
     room.off?.("reconnected", onReconnected);
     room.off?.("disconnected", onDisconnected);
+    room.off?.("trackSubscribed", onTrackSubscribed);
+    room.off?.("trackUnsubscribed", onTrackUnsubscribed);
+    room.off?.("localTrackPublished", onLocalTrackPublished);
+    room.off?.("localTrackUnpublished", onLocalTrackUnpublished);
   };
+}
+
+function isRenderableMediaTrack(track: LiveKitAttachableTrack, publication: LiveKitTrackPublication): boolean {
+  if (!track || !publication) {
+    return false;
+  }
+
+  const kind = track.kind ?? publication.kind;
+  return kind === "audio" || kind === "video";
 }
 
 async function readJsonBody(response: Response): Promise<unknown> {

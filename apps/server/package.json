@@ -21,6 +21,7 @@
     "smoke:judge0": "npm run build && node scripts/smoke-judge0.mjs",
     "smoke:livekit": "npm run build && node scripts/smoke-livekit.mjs",
     "smoke:livekit:browser": "npm run build && node scripts/smoke-livekit-browser.mjs",
+    "dev:demo": "npm run build && node scripts/start-local-demo.mjs",
     "dev": "node dist/index.js"
   },
   "dependencies": {

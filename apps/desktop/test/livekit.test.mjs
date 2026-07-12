@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  attachLiveKitMediaTrack,
   connectLiveKitRoom,
+  detachLiveKitMediaTrack,
   observeLiveKitRoomEvents,
+  publishLiveKitCameraAndMicrophone,
   requestLiveKitToken,
   runDisplayMediaSelfCheck,
   setLiveKitScreenShare,
@@ -128,6 +131,65 @@ test("connectLiveKitRoom connects an injected room with the backend-issued token
   ]);
 });
 
+test("publishLiveKitCameraAndMicrophone enables local camera and microphone", async () => {
+  const calls = [];
+
+  await publishLiveKitCameraAndMicrophone({
+    localParticipant: {
+      async enableCameraAndMicrophone() {
+        calls.push("combined");
+      },
+    },
+  });
+
+  assert.deepEqual(calls, ["combined"]);
+
+  const fallbackCalls = [];
+  await publishLiveKitCameraAndMicrophone({
+    localParticipant: {
+      async setCameraEnabled(enabled) {
+        fallbackCalls.push(["camera", enabled]);
+      },
+      async setMicrophoneEnabled(enabled) {
+        fallbackCalls.push(["microphone", enabled]);
+      },
+    },
+  });
+
+  assert.deepEqual(fallbackCalls, [
+    ["camera", true],
+    ["microphone", true],
+  ]);
+
+  await assert.rejects(
+    () => publishLiveKitCameraAndMicrophone({}),
+    /does not support local media/,
+  );
+});
+
+test("attachLiveKitMediaTrack prepares attached media and detachLiveKitMediaTrack detaches it", () => {
+  const detached = [];
+  const element = {
+    autoplay: false,
+    controls: true,
+  };
+  const track = {
+    attach() {
+      return element;
+    },
+    detach() {
+      detached.push("detached");
+    },
+  };
+
+  assert.equal(attachLiveKitMediaTrack(track), element);
+  assert.equal(element.autoplay, true);
+  assert.equal(element.controls, false);
+
+  detachLiveKitMediaTrack(track);
+  assert.deepEqual(detached, ["detached"]);
+});
+
 test("runDisplayMediaSelfCheck verifies capture support and stops captured tracks", async () => {
   const calls = [];
   const stopped = [];
@@ -230,6 +292,57 @@ test("observeLiveKitRoomEvents maps reconnect events to audio-priority degradati
     "audio-priority",
     "normal",
     "audio-priority",
+  ]);
+
+  cleanup();
+  assert.equal(listeners.size, 0);
+});
+
+test("observeLiveKitRoomEvents forwards renderable media track events", () => {
+  const listeners = new Map();
+  const room = {
+    on(event, handler) {
+      listeners.set(event, handler);
+    },
+    off(event, handler) {
+      if (listeners.get(event) === handler) {
+        listeners.delete(event);
+      }
+    },
+  };
+  const events = [];
+  const videoTrack = { kind: "video", sid: "track-video" };
+  const audioTrack = { kind: "audio", sid: "track-audio" };
+  const dataTrack = { kind: "data", sid: "track-data" };
+  const participant = { identity: "participant-a" };
+  const cleanup = observeLiveKitRoomEvents(room, {
+    onConnectionStatus() {},
+    onMediaMode() {},
+    onTrackSubscribed(track, publication, eventParticipant) {
+      events.push(["subscribed", track.sid, publication.trackSid, eventParticipant.identity]);
+    },
+    onTrackUnsubscribed(track, publication, eventParticipant) {
+      events.push(["unsubscribed", track.sid, publication.trackSid, eventParticipant.identity]);
+    },
+    onLocalTrackPublished(track, publication, eventParticipant) {
+      events.push(["local-published", track.sid, publication.trackSid, eventParticipant.identity]);
+    },
+    onLocalTrackUnpublished(track, publication, eventParticipant) {
+      events.push(["local-unpublished", track.sid, publication.trackSid, eventParticipant.identity]);
+    },
+  });
+
+  listeners.get("trackSubscribed")(videoTrack, { trackSid: "remote-video" }, participant);
+  listeners.get("trackSubscribed")(dataTrack, { trackSid: "remote-data" }, participant);
+  listeners.get("trackUnsubscribed")(videoTrack, { trackSid: "remote-video" }, participant);
+  listeners.get("localTrackPublished")({ trackSid: "local-audio", track: audioTrack }, participant);
+  listeners.get("localTrackUnpublished")({ trackSid: "local-audio", track: audioTrack }, participant);
+
+  assert.deepEqual(events, [
+    ["subscribed", "track-video", "remote-video", "participant-a"],
+    ["unsubscribed", "track-video", "remote-video", "participant-a"],
+    ["local-published", "track-audio", "local-audio", "participant-a"],
+    ["local-unpublished", "track-audio", "local-audio", "participant-a"],
   ]);
 
   cleanup();

@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@anecites/shared": "0.0.0",
+    "monaco-editor": "^0.53.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "y-protocols": "^1.0.7",

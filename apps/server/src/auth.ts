@@ -1,4 +1,4 @@
-import { jwtVerify } from "jose";
+import { jwtVerify, SignJWT } from "jose";
 import { type RequestHandler } from "express";
 import { USER_ROLES, type UserRole } from "@anecites/shared";
 
@@ -10,6 +10,19 @@ const bearerTokenPattern = /^Bearer (?<token>.+)$/;
 export interface AuthenticatedPrincipal {
   subject: string;
   role: UserRole;
+}
+
+export async function issueAuthToken(
+  config: ServerConfig,
+  principal: AuthenticatedPrincipal,
+  ttlSeconds: number,
+): Promise<string> {
+  return new SignJWT({ role: principal.role })
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(principal.subject)
+    .setIssuedAt()
+    .setExpirationTime(`${ttlSeconds}s`)
+    .sign(new TextEncoder().encode(config.authJwtSecret));
 }
 
 export function requireAuth(config: ServerConfig): RequestHandler {
