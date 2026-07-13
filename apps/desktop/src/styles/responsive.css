@@ -1,0 +1,258 @@
+@media (max-width: 1180px) {
+  .application-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .application-sidebar {
+    position: static;
+    display: grid;
+    height: auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    border-right: 0;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+
+  .application-sidebar > .ui-separator,
+  .application-identity .ui-separator,
+  .application-navigation-label {
+    display: none;
+  }
+
+  .application-brand {
+    min-height: 52px;
+  }
+
+  .application-navigation {
+    flex-direction: row;
+    justify-content: center;
+    padding: 8px;
+    overflow-x: auto;
+  }
+
+  .application-navigation-link {
+    flex: 0 0 auto;
+  }
+
+  .application-identity {
+    margin: 0;
+  }
+
+  .application-identity-row {
+    max-width: 200px;
+  }
+
+  .application-topbar {
+    top: 0;
+  }
+}
+
+@media (max-width: 940px) {
+  .landing-header {
+    padding-inline: 16px;
+  }
+
+  .landing-header nav {
+    display: none;
+  }
+
+  .landing-hero {
+    grid-template-columns: 1fr;
+    gap: 48px;
+    padding: 72px 16px 84px;
+  }
+
+  .landing-hero h1 {
+    font-size: 3rem;
+  }
+
+  .landing-section {
+    padding: 72px 16px;
+  }
+
+  .landing-feature-grid,
+  .landing-step-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .landing-footer {
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+    padding: 24px 16px;
+  }
+
+  .application-content {
+    padding: 12px;
+  }
+
+  .app-shell,
+  .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .meeting-topbar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .meeting-credentials {
+    order: 3;
+    width: 100%;
+  }
+
+  .meeting-credentials > div {
+    flex: 1;
+  }
+
+  .candidate-video-stage,
+  .candidate-coding-room {
+    grid-template-columns: 1fr;
+  }
+
+  .candidate-code-pane {
+    min-height: 600px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .candidate-video-rail {
+    min-height: 340px;
+  }
+
+  .candidate-video-rail-feed {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .session-panel,
+  .editor-pane {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .editor-pane {
+    min-height: 560px;
+  }
+}
+
+@media (max-width: 720px) {
+  .landing-hero h1 {
+    font-size: 2.5rem;
+  }
+
+  .landing-lede {
+    font-size: 1rem;
+  }
+
+  .landing-actions,
+  .landing-actions .ui-button {
+    width: 100%;
+  }
+
+  .landing-section-heading h2 {
+    font-size: 2rem;
+  }
+
+  .landing-footer nav {
+    gap: 14px;
+  }
+
+  .demo-gateway {
+    padding: 12px;
+  }
+
+  .demo-gateway-panel {
+    padding: 20px;
+  }
+
+  .demo-primary-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .application-sidebar {
+    grid-template-columns: 1fr;
+  }
+
+  .application-brand,
+  .application-identity {
+    display: none;
+  }
+
+  .application-navigation {
+    justify-content: flex-start;
+  }
+
+  .application-topbar {
+    align-items: flex-start;
+    padding: 10px 12px;
+  }
+
+  .application-context > span:first-child,
+  .application-context > span:nth-child(2),
+  .application-context .ui-badge {
+    display: none;
+  }
+
+  .application-actions {
+    flex: 0 0 auto;
+  }
+
+  .meeting-topbar-actions,
+  .meeting-call-controls {
+    width: 100%;
+  }
+
+  .meeting-topbar-actions {
+    justify-content: flex-start;
+  }
+
+  .meeting-call-controls {
+    flex-wrap: wrap;
+    border-radius: var(--radius-sm);
+  }
+
+  .meeting-call-controls button {
+    flex: 1 1 50%;
+  }
+
+  .candidate-video-room {
+    min-height: auto;
+    padding: 12px;
+  }
+
+  .candidate-coding-room {
+    max-height: none;
+    min-height: auto;
+    overflow: visible;
+  }
+
+  .candidate-code-pane {
+    grid-template-rows: auto minmax(420px, 1fr) minmax(140px, auto);
+  }
+
+  .candidate-video-stage {
+    gap: 12px;
+  }
+
+  .meeting-video-card[data-priority="primary"],
+  .meeting-video-card[data-priority="secondary"] {
+    min-height: 280px;
+  }
+
+  .candidate-video-rail-feed,
+  .meeting-native-panel dl {
+    grid-template-columns: 1fr;
+  }
+
+  .review-item-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .ui-dialog-footer {
+    flex-direction: column-reverse;
+  }
+
+  .ui-dialog-footer .ui-button {
+    width: 100%;
+  }
+}

@@ -140,7 +140,7 @@ export function MonacoCollabEditor(props: MonacoCollabEditorProps): ReactElement
       editor = monaco.editor.create(monacoContainerRef.current, {
         model,
         readOnly,
-        theme: "anecites-dark",
+        theme: "anecites-light",
         automaticLayout: true,
         minimap: {
           enabled: false,
@@ -306,26 +306,26 @@ function registerAnecitesTheme(monaco: MonacoModule): void {
     return;
   }
 
-  monaco.editor.defineTheme("anecites-dark", {
-    base: "vs-dark",
+  monaco.editor.defineTheme("anecites-light", {
+    base: "vs",
     inherit: true,
     rules: [
-      { token: "keyword", foreground: "c586c0" },
-      { token: "number", foreground: "b5cea8" },
-      { token: "string", foreground: "ce9178" },
-      { token: "type", foreground: "4ec9b0" },
-      { token: "comment", foreground: "6a9955" },
+      { token: "keyword", foreground: "6d28d9" },
+      { token: "number", foreground: "0f766e" },
+      { token: "string", foreground: "b45309" },
+      { token: "type", foreground: "0369a1" },
+      { token: "comment", foreground: "64748b" },
     ],
     colors: {
-      "editor.background": "#1f1f1f",
-      "editor.foreground": "#f5f5f5",
-      "editor.lineHighlightBackground": "#2a2a2a",
-      "editorLineNumber.foreground": "#858585",
-      "editorLineNumber.activeForeground": "#d4d4d4",
-      "editorCursor.foreground": "#f5f5f5",
-      "editorIndentGuide.background1": "#3a3a3a",
-      "editorIndentGuide.activeBackground1": "#525252",
-      "editor.selectionBackground": "#264f78",
+      "editor.background": "#ffffff",
+      "editor.foreground": "#111827",
+      "editor.lineHighlightBackground": "#f8fafc",
+      "editorLineNumber.foreground": "#94a3b8",
+      "editorLineNumber.activeForeground": "#111827",
+      "editorCursor.foreground": "#111827",
+      "editorIndentGuide.background1": "#e5e7eb",
+      "editorIndentGuide.activeBackground1": "#cbd5e1",
+      "editor.selectionBackground": "#bfdbfe",
     },
   });
   themeRegistered = true;

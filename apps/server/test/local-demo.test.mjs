@@ -29,10 +29,12 @@ function quietLogger() {
   };
 }
 
-function createFakePistonFetch(responseBody) {
+function createFakePistonFetch(responseBodies) {
   const calls = [];
+  const bodies = Array.isArray(responseBodies) ? responseBodies : [responseBodies];
 
   async function fetchImpl(url, init = {}) {
+    const responseBody = bodies[Math.min(calls.length, bodies.length - 1)];
     calls.push({
       url: String(url),
       method: init.method,
@@ -101,15 +103,26 @@ test("local demo host and candidate use code/password to receive real session bo
     await prisma.$disconnect();
   });
 
-  const fakePiston = createFakePistonFetch({
-    run: {
-      stdout: "ok\n",
-      stderr: "",
-      output: "ok\n",
-      code: 0,
-      signal: null,
+  const fakePiston = createFakePistonFetch([
+    {
+      run: {
+        stdout: "candidate run\n",
+        stderr: "",
+        output: "candidate run\n",
+        code: 0,
+        signal: null,
+      },
     },
-  });
+    {
+      run: {
+        stdout: "Case 1: expected [0,1], received []\n",
+        stderr: "ANECITES_SUBMIT:FAIL 3/3\n",
+        output: "Case 1: expected [0,1], received []\nANECITES_SUBMIT:FAIL 3/3\n",
+        code: 1,
+        signal: null,
+      },
+    },
+  ]);
   const app = createApp(testConfig(), {
     logger: quietLogger(),
     prisma,
@@ -118,8 +131,24 @@ test("local demo host and candidate use code/password to receive real session bo
   const server = await listen(app);
   t.after(() => new Promise((resolve) => server.close(resolve)));
 
+  const problemsResult = await jsonRequest(server, "/local-demo/problems", {
+    method: "GET",
+  });
+
+  assert.equal(problemsResult.response.status, 200);
+  assert.deepEqual(
+    problemsResult.body.problems.map((problem) => problem.slug),
+    ["local-demo-two-sum-javascript", "local-demo-product-pair-javascript"],
+  );
+  assert.equal(problemsResult.body.problems[1].title, "Product Pair");
+  assert.equal(problemsResult.body.problems[1].languageId, 63);
+  assert.equal("testcases" in problemsResult.body.problems[1], false);
+
   const hostResult = await jsonRequest(server, "/local-demo/meetings", {
     method: "POST",
+    body: JSON.stringify({
+      problemSlug: "local-demo-product-pair-javascript",
+    }),
   });
 
   assert.equal(hostResult.response.status, 201);
@@ -238,10 +267,53 @@ test("local demo host and candidate use code/password to receive real session bo
   );
 
   assert.equal(problemResult.response.status, 200);
-  assert.equal(problemResult.body.problem.title, "Two Sum");
+  assert.equal(problemResult.body.problem.title, "Product Pair");
+  assert.equal(problemResult.body.problem.testcases.length, 2);
   assert.equal(problemResult.body.languageId, 63);
   assert.equal(problemResult.body.documentId, hostResult.body.connection.documentId);
-  assert.match(problemResult.body.starterCode, /function twoSum/);
+  assert.match(problemResult.body.starterCode, /function productPair/);
+
+  const persistedSession = await prisma.session.findUnique({
+    where: {
+      id: hostResult.body.connection.sessionId,
+    },
+    include: {
+      problem: {
+        include: {
+          testcases: {
+            orderBy: {
+              ordinal: "asc",
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(persistedSession?.problem?.title, "Product Pair");
+  assert.equal(persistedSession?.problem?.testcases.length, 3);
+  assert.equal(persistedSession?.problem?.testcases.filter((testcase) => testcase.hidden).length, 1);
+
+  const runResult = await jsonRequest(server, "/code-executions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${joinResult.body.connection.authToken}`,
+    },
+    body: JSON.stringify({
+      languageId: 63,
+      sourceCode: "console.log('candidate run')",
+      executionMode: "run",
+      sessionId: joinResult.body.connection.sessionId,
+      documentId: joinResult.body.connection.documentId,
+      participantId: joinResult.body.connection.participantId,
+    }),
+  });
+
+  assert.equal(runResult.response.status, 201);
+  assert.equal(runResult.body.execution.status.description, "Accepted");
+  assert.equal(runResult.body.execution.stdout, "candidate run\n");
+  assert.equal(fakePiston.calls.length, 1);
+  assert.equal(fakePiston.calls[0].body.files[0].content, "console.log('candidate run')");
 
   const executionResult = await jsonRequest(server, "/code-executions", {
     method: "POST",
@@ -250,7 +322,8 @@ test("local demo host and candidate use code/password to receive real session bo
     },
     body: JSON.stringify({
       languageId: 63,
-      sourceCode: "console.log('ok')",
+      sourceCode: "function productPair() { return []; }",
+      executionMode: "submit",
       sessionId: joinResult.body.connection.sessionId,
       documentId: joinResult.body.connection.documentId,
       participantId: joinResult.body.connection.participantId,
@@ -258,20 +331,63 @@ test("local demo host and candidate use code/password to receive real session bo
   });
 
   assert.equal(executionResult.response.status, 201);
-  assert.equal(executionResult.body.execution.status.description, "Accepted");
-  assert.equal(fakePiston.calls.length, 1);
+  assert.equal(executionResult.body.execution.status.description, "Wrong Answer");
+  assert.equal(executionResult.body.execution.message, "One or more interview problem testcases failed");
+  assert.equal(fakePiston.calls.length, 2);
+  assert.match(fakePiston.calls[1].body.files[0].content, /ANECITES_SUBMIT:FAIL/);
+  assert.match(fakePiston.calls[1].body.files[0].content, /function productPair/);
+  assert.match(fakePiston.calls[1].body.files[0].content, /"target":18/);
 
   const submissions = await prisma.codeSubmission.findMany({
     where: {
       sessionId: joinResult.body.connection.sessionId,
     },
   });
+  const runSubmission = submissions.find((submission) => submission.executionMode === "RUN");
+  const submitSubmission = submissions.find((submission) => submission.executionMode === "SUBMIT");
 
-  assert.equal(submissions.length, 1);
-  assert.equal(submissions[0].documentId, joinResult.body.connection.documentId);
-  assert.equal(submissions[0].participantId, joinResult.body.connection.participantId);
-  assert.equal(submissions[0].status, "ACCEPTED");
-  assert.equal(submissions[0].stdout, "ok\n");
+  assert.equal(submissions.length, 2);
+  assert.equal(runSubmission?.problemId, persistedSession?.problem?.id);
+  assert.equal(runSubmission?.documentId, joinResult.body.connection.documentId);
+  assert.equal(runSubmission?.participantId, joinResult.body.connection.participantId);
+  assert.equal(runSubmission?.status, "ACCEPTED");
+  assert.equal(runSubmission?.stdout, "candidate run\n");
+  assert.equal(submitSubmission?.problemId, persistedSession?.problem?.id);
+  assert.equal(submitSubmission?.documentId, joinResult.body.connection.documentId);
+  assert.equal(submitSubmission?.participantId, joinResult.body.connection.participantId);
+  assert.equal(submitSubmission?.status, "WRONG_ANSWER");
+  assert.equal(submitSubmission?.stdout, "Case 1: expected [0,1], received []\n");
+
+  const submissionHistoryResult = await jsonRequest(
+    server,
+    `/code-executions?sessionId=${encodeURIComponent(joinResult.body.connection.sessionId)}&documentId=${encodeURIComponent(joinResult.body.connection.documentId)}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${joinResult.body.connection.authToken}`,
+      },
+    },
+  );
+
+  assert.equal(submissionHistoryResult.response.status, 200);
+  assert.equal(submissionHistoryResult.body.submissions.length, 2);
+  assert.deepEqual(
+    submissionHistoryResult.body.submissions
+      .map((submission) => [submission.executionMode, submission.status])
+      .sort(),
+    [
+      ["run", "Accepted"],
+      ["submit", "Wrong Answer"],
+    ],
+  );
+  assert.equal(
+    submissionHistoryResult.body.submissions.every((submission) => submission.problemId === persistedSession?.problem?.id),
+    true,
+  );
+  assert.equal(
+    submissionHistoryResult.body.submissions.every((submission) => submission.timeMs === null),
+    true,
+  );
 });
 
 test("local demo routes are unavailable unless explicitly enabled", async (t) => {

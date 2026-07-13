@@ -1,31 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
-  MonacoCollabEditor,
   connectEditorCollabSession,
   createCodeExecutionClient,
   createEditorYjsDocument,
   type CodeExecutionResult,
   type EditorCollabSession,
 } from "@anecites/editor-core";
-import { type LocalDemoProblem } from "@anecites/shared";
 
 import {
   type NormalizedJoinSessionInput,
 } from "./session.js";
 import {
-  getLocalDemoProblem,
   getLocalDemoWorkspaceState,
   hostLocalDemoMeeting,
   joinLocalDemoMeeting,
   updateLocalDemoWorkspaceState,
   type LocalDemoMeetingCredentials,
 } from "./local-demo.js";
-import {
-  createLocalDemoSubmissionSource,
-  localDemoProblem,
-  localDemoStarterCode,
-  normalizeLocalDemoSubmissionResult,
-} from "./local-demo-problem.js";
 import { LandingPage } from "./LandingPage.js";
 import {
   attachLiveKitMediaTrack,
@@ -38,7 +29,6 @@ import {
   runDisplayMediaSelfCheck,
   setLiveKitScreenShare,
   type LiveKitAttachableTrack,
-  type LiveKitConnectionStatus,
   type LiveKitMediaMode,
   type LiveKitParticipant,
   type LiveKitTrackPublication,
@@ -56,61 +46,52 @@ import {
   type ReviewerRiskSummary,
   type RiskSummaryReviewStatus,
 } from "./review.js";
+import { CandidateEditorPanel } from "./CandidateEditorPanel.js";
+import {
+  LiveKitMediaTileView,
+  MeetingCallControls,
+  MeetingVideoRail,
+  MeetingVideoRoom,
+} from "./MeetingVideo.js";
+import { NativeMonitorPanel } from "./NativeMonitorPanel.js";
+import { ReviewQueuePanel } from "./ReviewQueuePanel.js";
+import {
+  emptyExecution,
+  type CollabStatus,
+  type EditorCursorPosition,
+  type ExecutionMode,
+  type ExecutionStatus,
+  type LiveKitMediaTile,
+  type LiveKitMediaTileKind,
+  type NativeMonitoringStatus,
+  type ReviewQueueStatus,
+  type ScreenShareStatus,
+  type VideoStatus,
+} from "./meeting-types.js";
 import { readShellIdentity } from "./ui/app-shell.js";
 import { Badge, Button, Field, Input } from "./ui/primitives.js";
 
-const emptyExecution: CodeExecutionResult = {
-  token: null,
-  status: {
-    id: 0,
-    description: "Not run",
-  },
-  stdout: null,
-  stderr: null,
-  compileOutput: null,
-  message: null,
-  timeSeconds: null,
-  memoryKb: null,
-};
-
-type VideoStatus = "idle" | "connecting" | LiveKitConnectionStatus | "error";
-type ScreenShareStatus = "idle" | "checking" | "ready" | "sharing" | "error";
-type NativeMonitoringStatus = "idle" | "scanning" | "ready" | "error";
-type ReviewQueueStatus = "idle" | "loading" | "ready" | "updating" | "error";
 type DemoView = "home" | "candidate";
 type DemoRequestStatus = "idle" | "loading" | "error";
-type ExecutionStatus = "idle" | "running" | "ready" | "error";
-type CollabStatus = "idle" | "connecting" | "connected" | "unavailable";
-type ExecutionMode = "run" | "submit";
-type LiveKitMediaTileKind = "audio" | "video";
 
-interface LiveKitMediaTile {
-  id: string;
-  kind: LiveKitMediaTileKind;
-  participantName: string;
-  source: string;
-  local: boolean;
-  element: HTMLMediaElement;
+export interface AppProps {
+  initialSession?: NormalizedJoinSessionInput | null;
+  initialHostedMeeting?: LocalDemoMeetingCredentials | null;
+  initialCodeEditorOpen?: boolean;
+  nativeMonitoringAvailableOverride?: boolean;
 }
 
-interface LocalSubmissionRecord {
-  id: string;
-  mode: ExecutionMode;
-  status: string;
-  occurredAt: string;
-}
-
-interface EditorCursorPosition {
-  lineNumber: number;
-  column: number;
-}
-
-export function App(): React.ReactElement {
+export function App({
+  initialSession = null,
+  initialHostedMeeting = null,
+  initialCodeEditorOpen = false,
+  nativeMonitoringAvailableOverride,
+}: AppProps = {}): React.ReactElement {
   const document = useMemo(
     () =>
       createEditorYjsDocument({
         documentId: "local-draft",
-        initialText: localDemoStarterCode,
+        initialText: "",
       }),
     [],
   );
@@ -119,14 +100,12 @@ export function App(): React.ReactElement {
   const [demoError, setDemoError] = useState<string | null>(null);
   const [meetingCode, setMeetingCode] = useState("");
   const [meetingPassword, setMeetingPassword] = useState("");
-  const [hostedMeeting, setHostedMeeting] = useState<LocalDemoMeetingCredentials | null>(null);
-  const [session, setSession] = useState<NormalizedJoinSessionInput | null>(null);
-  const [activeProblem, setActiveProblem] = useState<LocalDemoProblem>(localDemoProblem);
-  const [codeEditorOpen, setCodeEditorOpen] = useState(false);
+  const [hostedMeeting, setHostedMeeting] = useState<LocalDemoMeetingCredentials | null>(initialHostedMeeting);
+  const [session, setSession] = useState<NormalizedJoinSessionInput | null>(initialSession);
+  const [codeEditorOpen, setCodeEditorOpen] = useState(initialCodeEditorOpen);
   const [workspaceStateError, setWorkspaceStateError] = useState<string | null>(null);
   const [execution, setExecution] = useState<CodeExecutionResult>(emptyExecution);
   const [executionStatus, setExecutionStatus] = useState<ExecutionStatus>("idle");
-  const [submissionHistory, setSubmissionHistory] = useState<LocalSubmissionRecord[]>([]);
   const [collabStatus, setCollabStatus] = useState<CollabStatus>("idle");
   const [cursorPosition, setCursorPosition] = useState<EditorCursorPosition>({
     lineNumber: 1,
@@ -144,7 +123,7 @@ export function App(): React.ReactElement {
   const [reviewQueueStatus, setReviewQueueStatus] = useState<ReviewQueueStatus>("idle");
   const [reviewQueueError, setReviewQueueError] = useState<string | null>(null);
   const [riskSummaries, setRiskSummaries] = useState<ReviewerRiskSummary[]>([]);
-  const nativeMonitoringAvailable = isNativeMonitoringRuntimeAvailable();
+  const nativeMonitoringAvailable = nativeMonitoringAvailableOverride ?? isNativeMonitoringRuntimeAvailable();
   const livekitRoomRef = useRef<ConnectableLiveKitRoom | null>(null);
   const livekitRoomCleanupRef = useRef<(() => void) | null>(null);
   const editorCollabRef = useRef<EditorCollabSession | null>(null);
@@ -194,46 +173,6 @@ export function App(): React.ReactElement {
       window.clearInterval(intervalId);
     };
   }, [session]);
-
-  useEffect(() => {
-    if (!session) {
-      return;
-    }
-
-    const activeSession = session;
-    let active = true;
-
-    async function refreshProblem(): Promise<void> {
-      try {
-        const details = await getLocalDemoProblem({
-          sessionId: activeSession.sessionId,
-          authToken: activeSession.authToken,
-        });
-
-        if (!active) {
-          return;
-        }
-
-        setActiveProblem(details.problem);
-        if (document.text.toString() === localDemoStarterCode || document.text.length === 0) {
-          document.doc.transact(() => {
-            document.text.delete(0, document.text.length);
-            document.text.insert(0, details.starterCode);
-          });
-        }
-      } catch (error) {
-        if (active) {
-          setWorkspaceStateError(error instanceof Error ? error.message : "Problem unavailable");
-        }
-      }
-    }
-
-    void refreshProblem();
-
-    return () => {
-      active = false;
-    };
-  }, [document, session]);
 
   useEffect(() => {
     if (!session || !codeEditorOpen) {
@@ -354,8 +293,6 @@ export function App(): React.ReactElement {
     setExecution(emptyExecution);
     setExecutionStatus("idle");
     setCollabStatus("idle");
-    setSubmissionHistory([]);
-    setActiveProblem(localDemoProblem);
   }
 
   async function leaveDemoSession(): Promise<void> {
@@ -561,7 +498,6 @@ export function App(): React.ReactElement {
         },
         message: "Join a session before executing code",
       });
-      recordSubmission(mode, "Failed");
       return;
     }
 
@@ -576,7 +512,6 @@ export function App(): React.ReactElement {
         },
         message: "Write code before executing",
       });
-      recordSubmission(mode, "Failed");
       return;
     }
 
@@ -595,17 +530,14 @@ export function App(): React.ReactElement {
       });
       const result = await client.execute({
         languageId: session.languageId,
-        sourceCode: mode === "submit"
-          ? createLocalDemoSubmissionSource(sourceCode, session.languageId, activeProblem)
-          : sourceCode,
+        sourceCode,
+        executionMode: mode,
         sessionId: session.sessionId,
         documentId: session.documentId,
         participantId: session.participantId,
       });
-      const normalizedResult = mode === "submit" ? normalizeLocalDemoSubmissionResult(result) : result;
-      setExecution(normalizedResult);
+      setExecution(result);
       setExecutionStatus("ready");
-      recordSubmission(mode, normalizedResult.status.description);
     } catch (error) {
       setExecutionStatus("error");
       setExecution({
@@ -616,20 +548,7 @@ export function App(): React.ReactElement {
         },
         message: error instanceof Error ? error.message : "Code execution failed",
       });
-      recordSubmission(mode, "Failed");
     }
-  }
-
-  function recordSubmission(mode: ExecutionMode, status: string): void {
-    setSubmissionHistory((current) => [
-      {
-        id: `${Date.now()}-${current.length}`,
-        mode,
-        status,
-        occurredAt: new Date().toLocaleTimeString(),
-      },
-      ...current,
-    ].slice(0, 5));
   }
 
   const updateCursorPosition = useCallback((position: EditorCursorPosition) => {
@@ -744,31 +663,15 @@ export function App(): React.ReactElement {
   const sessionRoleLabel = isInterviewer ? "Interviewer" : "Candidate";
   const languageLabel = session?.languageId === 71 ? "Python" : "JavaScript";
   const callControls = (
-    <div className="meeting-call-controls" aria-label="Call controls">
-      <button
-        type="button"
-        onClick={() => void connectVideo()}
-        disabled={videoStatus === "connecting" || videoStatus === "connected" || videoStatus === "reconnecting"}
-      >
-        Connect camera
-      </button>
-      <button type="button" onClick={() => void disconnectVideo()} disabled={videoStatus !== "connected"}>
-        Disconnect
-      </button>
-      <button type="button" onClick={() => void checkScreenShare()} disabled={screenShareStatus === "checking"}>
-        Check screen
-      </button>
-      <button
-        type="button"
-        onClick={() => void startScreenShare()}
-        disabled={videoStatus !== "connected" || screenShareStatus === "sharing"}
-      >
-        Share screen
-      </button>
-      <button type="button" onClick={() => void stopScreenShare()} disabled={screenShareStatus !== "sharing"}>
-        Stop share
-      </button>
-    </div>
+    <MeetingCallControls
+      videoStatus={videoStatus}
+      screenShareStatus={screenShareStatus}
+      onConnectVideo={() => void connectVideo()}
+      onDisconnectVideo={() => void disconnectVideo()}
+      onCheckScreenShare={() => void checkScreenShare()}
+      onStartScreenShare={() => void startScreenShare()}
+      onStopScreenShare={() => void stopScreenShare()}
+    />
   );
   const hiddenAudioTiles = audioTiles.map((tile) => <LiveKitMediaTileView key={tile.id} tile={tile} />);
   const meetingAlerts = (
@@ -777,188 +680,6 @@ export function App(): React.ReactElement {
       {videoError ? <p className="meeting-error" role="alert">{videoError}</p> : null}
       {screenShareError ? <p className="meeting-error" role="alert">{screenShareError}</p> : null}
     </>
-  );
-  const executionOutput =
-    execution.stdout ?? execution.stderr ?? execution.compileOutput ?? execution.message ?? "";
-  const hasExecutionOutput = executionOutput.trim().length > 0;
-  const problemPanel = (
-    <aside className="candidate-problem-pane" aria-label="Interview problem">
-      <header>
-        <div>
-          <span>{activeProblem.difficulty}</span>
-          <h1>{activeProblem.title}</h1>
-        </div>
-      </header>
-      <div className="candidate-problem-content">
-        <p>{activeProblem.prompt}</p>
-        <section aria-labelledby="problem-examples">
-          <h2 id="problem-examples">Examples</h2>
-          {activeProblem.examples.map((example, index) => (
-            <article key={example.input}>
-              <h3>Example {index + 1}</h3>
-              <dl>
-                <div>
-                  <dt>Input</dt>
-                  <dd>{example.input}</dd>
-                </div>
-                <div>
-                  <dt>Output</dt>
-                  <dd>{example.output}</dd>
-                </div>
-              </dl>
-            </article>
-          ))}
-        </section>
-        <section aria-labelledby="problem-constraints">
-          <h2 id="problem-constraints">Constraints</h2>
-          <ul>
-            {activeProblem.constraints.map((constraint) => (
-              <li key={constraint}>{constraint}</li>
-            ))}
-          </ul>
-        </section>
-        <section aria-labelledby="problem-testcases">
-          <h2 id="problem-testcases">Local testcases</h2>
-          <ol className="candidate-testcase-list">
-            {activeProblem.testcases.map((testcase, index) => (
-              <li key={`${testcase.target}-${testcase.nums.join(",")}`}>
-                <strong>Case {index + 1}</strong>
-                <span>nums = [{testcase.nums.join(", ")}], target = {testcase.target}</span>
-                <span>expected = [{testcase.expected.join(", ")}]</span>
-              </li>
-            ))}
-          </ol>
-        </section>
-        <section aria-labelledby="submission-history">
-          <h2 id="submission-history">Submissions</h2>
-          {submissionHistory.length === 0 ? (
-            <p className="candidate-submission-empty">No runs yet</p>
-          ) : (
-            <ol className="candidate-submission-list">
-              {submissionHistory.map((submission) => (
-                <li key={submission.id}>
-                  <span>{submission.mode === "submit" ? "Submit" : "Run"}</span>
-                  <strong>{submission.status}</strong>
-                  <time>{submission.occurredAt}</time>
-                </li>
-              ))}
-            </ol>
-          )}
-        </section>
-      </div>
-    </aside>
-  );
-  const editorPanel = (
-    <section className="candidate-code-pane" aria-label="Shared code editor">
-      <header className="candidate-editor-tabs">
-        <nav aria-label="Editor sections">
-          <button type="button" aria-current="page">
-            <span aria-hidden="true">{"</>"}</span>
-            Code
-          </button>
-          <button type="button" disabled>
-            Solutions
-          </button>
-          <button type="button" disabled>
-            Submissions
-          </button>
-        </nav>
-        <div className="candidate-editor-window-actions" aria-label="Editor tools">
-          <button type="button" aria-label="Reset editor" disabled>
-            Reset
-          </button>
-          <button type="button" aria-label="Fullscreen editor" disabled>
-            Fullscreen
-          </button>
-        </div>
-      </header>
-      <div className="candidate-code-toolbar">
-        <div className="candidate-language-select" aria-label={`Current language: ${languageLabel}`}>
-          <span>{languageLabel}</span>
-          <span aria-hidden="true">v</span>
-        </div>
-        <span className="candidate-autosave-status">Saved automatically</span>
-        <div className="candidate-editor-assist">
-          <span>{formatCollabStatus(collabStatus)}</span>
-          <span>Anecites</span>
-          <span>
-            Ln {cursorPosition.lineNumber}, Col {cursorPosition.column}
-          </span>
-        </div>
-      </div>
-      <MonacoCollabEditor
-        className="candidate-editor-host"
-        document={document}
-        language={session?.languageId === 71 ? "python" : "javascript"}
-        onCursorPositionChange={updateCursorPosition}
-        telemetry={{
-          sessionId: session?.sessionId ?? "local",
-          participantId: session?.participantId ?? "local",
-          onEvent() {},
-        }}
-      />
-      <section className="candidate-console-pane" aria-label="Execution output">
-        <header className="candidate-console-toolbar">
-          <div className="candidate-console-tabs" role="tablist" aria-label="Console panels">
-            <button type="button" role="tab" aria-selected="false" disabled>
-              Testcase
-            </button>
-            <button type="button" role="tab" aria-selected="true">
-              Test Result
-            </button>
-          </div>
-          <div className="candidate-run-actions">
-            <button
-              className="candidate-run-button"
-              type="button"
-              onClick={() => void executeCurrentCode("run")}
-              disabled={executionStatus === "running"}
-            >
-              {executionStatus === "running" ? "Running" : "Run"}
-            </button>
-            <button
-              className="candidate-submit-button"
-              type="button"
-              onClick={() => void executeCurrentCode("submit")}
-              disabled={executionStatus === "running"}
-            >
-              Submit
-            </button>
-          </div>
-        </header>
-        <div className="candidate-console-body" data-status={executionStatus}>
-          {executionStatus === "idle" && !hasExecutionOutput ? (
-            <div className="candidate-testcase-preview">
-              {activeProblem.testcases.map((testcase, index) => (
-                <article key={`${testcase.target}-${index}`}>
-                  <strong>Case {index + 1}</strong>
-                  <span>Input: [{testcase.nums.join(", ")}], {testcase.target}</span>
-                  <span>Expected: [{testcase.expected.join(", ")}]</span>
-                </article>
-              ))}
-            </div>
-          ) : executionStatus === "running" ? (
-            <p>Running code through the Anecites backend...</p>
-          ) : (
-            <pre>{executionOutput}</pre>
-          )}
-          <dl>
-            <div>
-              <dt>Status</dt>
-              <dd>{execution.status.description}</dd>
-            </div>
-            <div>
-              <dt>Time</dt>
-              <dd>{execution.timeSeconds ?? "-"}</dd>
-            </div>
-            <div>
-              <dt>Memory</dt>
-              <dd>{execution.memoryKb ?? "-"}</dd>
-            </div>
-          </dl>
-        </div>
-      </section>
-    </section>
   );
 
   if (!session) {
@@ -1109,258 +830,58 @@ export function App(): React.ReactElement {
 
       {codeEditorOpen ? (
         <section className="candidate-coding-room" aria-label="Interview workspace">
-          {problemPanel}
-          {editorPanel}
-          <aside className="candidate-video-rail" aria-label="Video call">
-            <div className="candidate-video-rail-feed">
-              <MeetingVideoCard tile={localVideoTiles[0]} label="You" />
-              <MeetingVideoCard tile={remoteVideoTiles[0]} label={peerLabel} />
-              {remoteVideoTiles.slice(1).map((tile) => (
-                <MeetingVideoCard key={tile.id} tile={tile} label={tile.participantName} />
-              ))}
-              {hiddenAudioTiles}
-            </div>
-            {callControls}
-          </aside>
+          <CandidateEditorPanel
+            document={document}
+            language={session.languageId === 71 ? "python" : "javascript"}
+            languageLabel={languageLabel}
+            collabStatus={collabStatus}
+            cursorPosition={cursorPosition}
+            execution={execution}
+            executionStatus={executionStatus}
+            sessionId={session.sessionId}
+            participantId={session.participantId}
+            onCursorPositionChange={updateCursorPosition}
+            onExecute={(mode) => void executeCurrentCode(mode)}
+          />
+          <MeetingVideoRail
+            localVideoTiles={localVideoTiles}
+            remoteVideoTiles={remoteVideoTiles}
+            hiddenAudioTiles={hiddenAudioTiles}
+            peerLabel={peerLabel}
+            controls={callControls}
+          />
         </section>
       ) : (
-        <section className="candidate-video-room" aria-label="Interview video call">
-          <div className="candidate-video-stage">
-            <MeetingVideoCard tile={remoteVideoTiles[0]} label={peerLabel} priority="primary" />
-            <MeetingVideoCard tile={localVideoTiles[0]} label="You" priority="secondary" />
-            {remoteVideoTiles.slice(1).map((tile) => (
-              <MeetingVideoCard key={tile.id} tile={tile} label={tile.participantName} priority="secondary" />
-            ))}
-            {hiddenAudioTiles}
-          </div>
-          {callControls}
-        </section>
+        <MeetingVideoRoom
+          localVideoTiles={localVideoTiles}
+          remoteVideoTiles={remoteVideoTiles}
+          hiddenAudioTiles={hiddenAudioTiles}
+          peerLabel={peerLabel}
+          controls={callControls}
+        />
       )}
 
       {nativeMonitoringAvailable ? (
-        <section className="meeting-native-panel" id="native-monitor" aria-label="Native monitor">
-          <header>
-            <h2>Native monitor</h2>
-            <span aria-live="polite">{nativeMonitoringStatus}</span>
-          </header>
-          <button
-            type="button"
-            onClick={() => void runNativeMonitoringCheck()}
-            disabled={nativeMonitoringStatus === "scanning"}
-          >
-            Run native check
-          </button>
-          <dl>
-            <div>
-              <dt>Processes</dt>
-              <dd>{nativeSnapshot?.processReport.processes.length ?? "-"}</dd>
-            </div>
-            <div>
-              <dt>Windows</dt>
-              <dd>{nativeSnapshot?.windowReport.windows.length ?? "-"}</dd>
-            </div>
-            <div>
-              <dt>Capture flags</dt>
-              <dd>{protectedWindowCount}</dd>
-            </div>
-            <div>
-              <dt>VM signals</dt>
-              <dd>{detectedVmSignalCount}</dd>
-            </div>
-          </dl>
-          {nativeMonitoringError ? <p className="meeting-error" role="alert">{nativeMonitoringError}</p> : null}
-        </section>
+        <NativeMonitorPanel
+          status={nativeMonitoringStatus}
+          error={nativeMonitoringError}
+          snapshot={nativeSnapshot}
+          protectedWindowCount={protectedWindowCount}
+          detectedVmSignalCount={detectedVmSignalCount}
+          onRunCheck={() => void runNativeMonitoringCheck()}
+        />
       ) : null}
 
       {canAccessReviewerQueue ? (
-        <section className="review-pane" id="review-queue" aria-label="Reviewer queue">
-          <header>
-            <h2>Reviewer queue</h2>
-            <span aria-live="polite">{reviewQueueStatus}</span>
-          </header>
-          <div className="review-actions">
-            <button
-              type="button"
-              onClick={() => void refreshReviewQueue()}
-              disabled={reviewQueueStatus === "loading" || reviewQueueStatus === "updating"}
-            >
-              Refresh reviews
-            </button>
-          </div>
-          <div className="review-list">
-            {riskSummaries.length === 0 ? (
-              <p className="review-empty">No risk summaries loaded</p>
-            ) : (
-              riskSummaries.map((summary) => (
-                <article className="review-item" key={summary.id}>
-                  <div className="review-item-header">
-                    <strong>{Math.round(summary.score * 100)}%</strong>
-                    <span>{summary.reviewStatus}</span>
-                  </div>
-                  <p>{summary.rationale ?? "Review required"}</p>
-                  <dl>
-                    <div>
-                      <dt>Signals</dt>
-                      <dd>{summary.correlatedSignalCount}</dd>
-                    </div>
-                    <div>
-                      <dt>Window</dt>
-                      <dd>{formatReviewWindow(summary.windowStartedAt, summary.windowEndedAt)}</dd>
-                    </div>
-                  </dl>
-                  <div className="review-item-actions">
-                    <button
-                      type="button"
-                      onClick={() => void applyReviewStatus(summary.id, "confirmed")}
-                      disabled={reviewQueueStatus === "updating"}
-                    >
-                      Confirm
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void applyReviewStatus(summary.id, "dismissed")}
-                      disabled={reviewQueueStatus === "updating"}
-                    >
-                      Dismiss
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void applyReviewStatus(summary.id, "needs_more_context")}
-                      disabled={reviewQueueStatus === "updating"}
-                    >
-                      Need context
-                    </button>
-                  </div>
-                </article>
-              ))
-            )}
-          </div>
-          {reviewQueueError ? (
-            <p className="review-error" role="alert">
-              {reviewQueueError}
-            </p>
-          ) : null}
-        </section>
+        <ReviewQueuePanel
+          status={reviewQueueStatus}
+          error={reviewQueueError}
+          riskSummaries={riskSummaries}
+          onRefresh={() => void refreshReviewQueue()}
+          onApplyReviewStatus={(riskSummaryId, reviewStatus) => void applyReviewStatus(riskSummaryId, reviewStatus)}
+        />
       ) : null}
     </main>
-  );
-}
-
-function formatReviewWindow(windowStartedAt: string, windowEndedAt: string): string {
-  const start = new Date(windowStartedAt);
-  const end = new Date(windowEndedAt);
-
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    return "-";
-  }
-
-  return `${start.toLocaleTimeString()}-${end.toLocaleTimeString()}`;
-}
-
-function formatCollabStatus(status: CollabStatus): string {
-  switch (status) {
-    case "connected":
-      return "Synced";
-    case "connecting":
-      return "Syncing";
-    case "unavailable":
-      return "Local only";
-    case "idle":
-      return "Local draft";
-  }
-}
-
-function MeetingVideoCard({
-  tile,
-  label,
-  priority = "secondary",
-}: {
-  tile: LiveKitMediaTile | undefined;
-  label: string;
-  priority?: "primary" | "secondary";
-}): React.ReactElement {
-  const slotRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const slot = slotRef.current;
-
-    if (!slot || !tile) {
-      return;
-    }
-
-    const element = tile.element;
-    element.classList.add("video-media-element");
-    slot.replaceChildren(element);
-
-    return () => {
-      if (element.parentElement === slot) {
-        slot.removeChild(element);
-      }
-    };
-  }, [tile]);
-
-  if (!tile) {
-    return (
-      <article className="meeting-video-card" data-priority={priority} data-empty="true" aria-label={`${label} video`}>
-        <div className="meeting-video-placeholder">
-          <strong>{label}</strong>
-          <span>Waiting for video</span>
-        </div>
-      </article>
-    );
-  }
-
-  return (
-    <article
-      className="meeting-video-card"
-      data-priority={priority}
-      data-local={tile.local}
-      aria-label={`${tile.participantName} video`}
-    >
-      <div className="video-media-slot" ref={slotRef} />
-      <footer>
-        <span>{tile.local ? "You" : tile.participantName}</span>
-        <span>{formatMediaSource(tile.source)}</span>
-      </footer>
-    </article>
-  );
-}
-
-function LiveKitMediaTileView({ tile }: { tile: LiveKitMediaTile }): React.ReactElement {
-  const slotRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const slot = slotRef.current;
-
-    if (!slot) {
-      return;
-    }
-
-    const element = tile.element;
-    element.classList.add("video-media-element");
-    slot.replaceChildren(element);
-
-    return () => {
-      if (element.parentElement === slot) {
-        slot.removeChild(element);
-      }
-    };
-  }, [tile.element]);
-
-  if (tile.kind === "audio") {
-    return (
-      <div className="video-audio-slot" ref={slotRef} aria-label={`${tile.participantName} audio`} />
-    );
-  }
-
-  return (
-    <article className="video-tile" data-local={tile.local} aria-label={`${tile.participantName} video`}>
-      <div className="video-media-slot" ref={slotRef} />
-      <footer>
-        <span>{tile.participantName}</span>
-        <span>{formatMediaSource(tile.source)}</span>
-      </footer>
-    </article>
   );
 }
 
@@ -1381,15 +902,4 @@ function createMediaTileId(
   const participantIdentity = participant.identity ?? (local ? "local" : "remote");
   const trackId = publication.trackSid ?? track.sid ?? publication.source ?? track.kind ?? "media";
   return `${local ? "local" : "remote"}:${participantIdentity}:${trackId}`;
-}
-
-function formatMediaSource(source: string): string {
-  switch (source) {
-    case "camera":
-      return "Camera";
-    case "screen_share":
-      return "Screen";
-    default:
-      return source;
-  }
 }

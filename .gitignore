@@ -6,6 +6,8 @@ dist/
 build/
 coverage/
 .turbo/
+apps/desktop/dist-web/
+.codex-local/
 
 # Tauri/Rust output
 src-tauri/target/

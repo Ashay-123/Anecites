@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  getLocalDemoProblem,
   getLocalDemoWorkspaceState,
   hostLocalDemoMeeting,
   joinLocalDemoMeeting,
@@ -49,6 +48,7 @@ test("hostLocalDemoMeeting creates a meeting without exposing technical inputs",
 
   assert.equal(calls[0].url, "http://127.0.0.1:3000/local-demo/meetings");
   assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {});
   assert.equal(result.role, "interviewer");
   assert.deepEqual(result.meeting, {
     code: "123456",
@@ -154,49 +154,4 @@ test("local demo workspace state uses authenticated backend-only controls", asyn
     sessionId: "session-a",
     codeEditorOpen: true,
   });
-});
-
-test("getLocalDemoProblem requests backend problem details with session authentication", async () => {
-  const calls = [];
-  const details = await getLocalDemoProblem(
-    {
-      sessionId: "session-a",
-      authToken: "candidate-token",
-    },
-    async (url, init) => {
-      calls.push({ url, init });
-      return jsonResponse({
-        problem: {
-          title: "Two Sum",
-          difficulty: "Easy",
-          prompt: "Find the pair.",
-          examples: [
-            {
-              input: "nums = [2,7], target = 9",
-              output: "[0,1]",
-            },
-          ],
-          testcases: [
-            {
-              nums: [2, 7],
-              target: 9,
-              expected: [0, 1],
-            },
-          ],
-          constraints: ["Exactly one valid answer exists."],
-        },
-        starterCode: "function twoSum() {}",
-        languageId: 63,
-        documentId: "document-a",
-      });
-    },
-  );
-
-  assert.equal(calls[0].url, "http://127.0.0.1:3000/local-demo/meetings/problem?sessionId=session-a");
-  assert.equal(calls[0].init.method, "GET");
-  assert.equal(calls[0].init.headers.Authorization, "Bearer candidate-token");
-  assert.equal(details.problem.title, "Two Sum");
-  assert.equal(details.starterCode, "function twoSum() {}");
-  assert.equal(details.languageId, 63);
-  assert.equal(details.documentId, "document-a");
 });

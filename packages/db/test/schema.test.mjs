@@ -20,6 +20,8 @@ test("schema includes Module 1 persistence models", () => {
     "Session",
     "Participant",
     "EditorDocument",
+    "InterviewProblem",
+    "InterviewProblemTestcase",
     "CodeSubmission",
     "RiskSummary",
     "EvidenceObject",
@@ -36,6 +38,19 @@ test("schema stores replay and evidence as object references", () => {
   assert.match(schema, /model\s+EvidenceObject\s+\{[\s\S]*storageKey\s+String/);
   assert.match(schema, /model\s+EditorDocument\s+\{[\s\S]*replayObjectId\s+String\?/);
   assert.match(schema, /model\s+EditorDocument\s+\{[\s\S]*replayObject\s+EvidenceObject\?/);
+});
+
+test("schema links sessions and submissions to interview problems", () => {
+  const schema = readSchema();
+
+  assert.match(schema, /model\s+Session\s+\{[\s\S]*problemId\s+String\?/);
+  assert.match(schema, /model\s+CodeSubmission\s+\{[\s\S]*problemId\s+String\?/);
+  assert.match(schema, /model\s+CodeSubmission\s+\{[\s\S]*executionMode\s+CodeExecutionMode/);
+  assert.match(schema, /model\s+InterviewProblem\s+\{[\s\S]*starterCode\s+String/);
+  assert.match(schema, /model\s+InterviewProblem\s+\{[\s\S]*functionName\s+String/);
+  assert.match(schema, /model\s+InterviewProblemTestcase\s+\{[\s\S]*input\s+Json/);
+  assert.match(schema, /enum\s+CodeSubmissionStatus\s+\{[\s\S]*WRONG_ANSWER/);
+  assert.match(schema, /enum\s+CodeExecutionMode\s+\{[\s\S]*SUBMIT/);
 });
 
 test("schema does not model raw keystrokes as Postgres rows", () => {

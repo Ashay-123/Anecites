@@ -14,6 +14,8 @@ test("desktop app starts with the basic local demo host and join choices", () =>
   assert.match(html, /Built to be minimal, by design/);
   assert.match(html, /Join interview/);
   assert.match(html, /Host interview/);
+  assert.doesNotMatch(html, /Interview problem/);
+  assert.doesNotMatch(html, /Two Sum/);
   assert.doesNotMatch(html, /API URL/);
   assert.doesNotMatch(html, /Collaboration URL/);
   assert.doesNotMatch(html, /Session ID/);

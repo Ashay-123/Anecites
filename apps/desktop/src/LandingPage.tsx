@@ -75,7 +75,11 @@ const faqs = [
   },
 ] as const;
 
-export function LandingPage({ loading, onHostInterview, onJoinInterview }: LandingPageProps): ReactElement {
+export function LandingPage({
+  loading,
+  onHostInterview,
+  onJoinInterview,
+}: LandingPageProps): ReactElement {
   return (
     <div className="landing-page" data-anecites-desktop="landing-page">
       <header className="landing-header">

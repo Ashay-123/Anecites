@@ -8,9 +8,16 @@ export interface CodeExecutionSubmission {
   languageId: number;
   sourceCode: string;
   stdin?: string;
+  executionMode?: "run" | "submit";
   sessionId?: string;
   documentId?: string;
   participantId?: string;
+}
+
+export interface CodeExecutionSubmissionListRequest {
+  sessionId: string;
+  documentId?: string;
+  limit?: number;
 }
 
 export interface CodeExecutionStatus {
@@ -29,8 +36,23 @@ export interface CodeExecutionResult {
   memoryKb: number | null;
 }
 
+export interface CodeExecutionSubmissionRecord {
+  id: string;
+  sessionId: string;
+  problemId: string | null;
+  participantId: string | null;
+  documentId: string;
+  languageId: number;
+  executionMode: "run" | "submit";
+  status: string;
+  timeMs: number | null;
+  memoryKb: number | null;
+  createdAt: string;
+}
+
 export interface CodeExecutionClient {
   execute(submission: CodeExecutionSubmission): Promise<CodeExecutionResult>;
+  listSubmissions(request: CodeExecutionSubmissionListRequest): Promise<CodeExecutionSubmissionRecord[]>;
 }
 
 export interface CodeExecutionProxyErrorBody {
@@ -66,6 +88,38 @@ export function createCodeExecutionClient(
   }
 
   return {
+    async listSubmissions(request) {
+      const url = new URL("/code-executions", baseUrl);
+      url.searchParams.set("sessionId", requireNonEmptyString("sessionId", request.sessionId));
+
+      if (request.documentId !== undefined) {
+        url.searchParams.set("documentId", requireNonEmptyString("documentId", request.documentId));
+      }
+
+      if (request.limit !== undefined) {
+        if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > 50) {
+          throw new Error("limit must be between 1 and 50");
+        }
+        url.searchParams.set("limit", String(request.limit));
+      }
+
+      const response = await fetchImpl(url, {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const body: unknown = await response.json();
+
+      if (!response.ok) {
+        throw toClientError(response.status, body);
+      }
+
+      return parseCodeExecutionSubmissionListResponse(body);
+    },
+
     async execute(submission) {
       const response = await fetchImpl(new URL("/code-executions", baseUrl), {
         method: "POST",
@@ -98,6 +152,14 @@ function normalizeSubmission(submission: CodeExecutionSubmission): CodeExecution
     sourceCode: requireNonEmptyString("sourceCode", submission.sourceCode),
     stdin: submission.stdin ?? "",
   };
+
+  if (submission.executionMode !== undefined) {
+    if (submission.executionMode !== "run" && submission.executionMode !== "submit") {
+      throw new Error("executionMode must be one of: run, submit");
+    }
+
+    normalized.executionMode = submission.executionMode;
+  }
 
   if (submission.sessionId !== undefined) {
     normalized.sessionId = requireNonEmptyString("sessionId", submission.sessionId);
@@ -134,6 +196,20 @@ function parseCodeExecutionResponse(body: unknown): CodeExecutionResult {
   return body.execution;
 }
 
+function parseCodeExecutionSubmissionListResponse(body: unknown): CodeExecutionSubmissionRecord[] {
+  if (!isRecord(body) || !Array.isArray(body.submissions)) {
+    throw new Error("Code execution proxy returned an invalid submission list");
+  }
+
+  return body.submissions.map((submission) => {
+    if (!isCodeExecutionSubmissionRecord(submission)) {
+      throw new Error("Code execution proxy returned an invalid submission list");
+    }
+
+    return submission;
+  });
+}
+
 function isProxyErrorBody(value: unknown): value is CodeExecutionProxyErrorBody {
   if (!isRecord(value) || !isRecord(value.error)) {
     return false;
@@ -157,6 +233,26 @@ function isCodeExecutionResult(value: unknown): value is CodeExecutionResult {
     isNullableString(value.message) &&
     isNullableNumber(value.timeSeconds) &&
     isNullableNumber(value.memoryKb)
+  );
+}
+
+function isCodeExecutionSubmissionRecord(value: unknown): value is CodeExecutionSubmissionRecord {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === "string" &&
+    typeof value.sessionId === "string" &&
+    isNullableString(value.problemId) &&
+    isNullableString(value.participantId) &&
+    typeof value.documentId === "string" &&
+    typeof value.languageId === "number" &&
+    (value.executionMode === "run" || value.executionMode === "submit") &&
+    typeof value.status === "string" &&
+    isNullableNumber(value.timeMs) &&
+    isNullableNumber(value.memoryKb) &&
+    typeof value.createdAt === "string"
   );
 }
 

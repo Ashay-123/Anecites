@@ -40,11 +40,17 @@ enum CodeSubmissionStatus {
   QUEUED
   RUNNING
   ACCEPTED
+  WRONG_ANSWER
   COMPILE_ERROR
   RUNTIME_ERROR
   TIME_LIMIT_EXCEEDED
   MEMORY_LIMIT_EXCEEDED
   INTERNAL_ERROR
+}
+
+enum CodeExecutionMode {
+  RUN
+  SUBMIT
 }
 
 enum RiskReviewStatus {
@@ -69,6 +75,7 @@ model User {
 
 model Session {
   id                         String                     @id @default(cuid())
+  problemId                  String?
   title                      String
   state                      SessionState               @default(CREATED)
   scheduledAt                DateTime?
@@ -82,7 +89,9 @@ model Session {
   codeSubmissions            CodeSubmission[]
   riskSummaries              RiskSummary[]
   evidenceObjects            EvidenceObject[]
+  problem                    InterviewProblem?          @relation(fields: [problemId], references: [id], onDelete: SetNull)
 
+  @@index([problemId])
   @@index([state])
   @@index([scheduledAt])
 }
@@ -163,12 +172,48 @@ model EditorTelemetryAggregate {
   @@index([sessionId, windowStartedAt])
 }
 
+model InterviewProblem {
+  id              String                     @id @default(cuid())
+  slug            String                     @unique
+  title           String
+  difficulty      String
+  prompt          String                     @db.Text
+  starterCode     String                     @db.Text
+  functionName    String
+  languageId      Int
+  examples        Json
+  constraints     Json
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+  sessions        Session[]
+  testcases       InterviewProblemTestcase[]
+  codeSubmissions CodeSubmission[]
+
+  @@index([languageId])
+}
+
+model InterviewProblemTestcase {
+  id        String           @id @default(cuid())
+  problemId String
+  ordinal   Int
+  input     Json
+  expected  Json
+  hidden    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  problem   InterviewProblem @relation(fields: [problemId], references: [id], onDelete: Cascade)
+
+  @@unique([problemId, ordinal])
+  @@index([problemId])
+}
+
 model CodeSubmission {
   id                     String               @id @default(cuid())
   sessionId              String
+  problemId              String?
   participantId          String?
   documentId             String
   languageId             Int
+  executionMode          CodeExecutionMode     @default(RUN)
   sourceHashSha256       String
   stdin                  String?              @db.Text
   stdout                 String?              @db.Text
@@ -181,11 +226,13 @@ model CodeSubmission {
   createdAt              DateTime             @default(now())
   updatedAt              DateTime             @updatedAt
   session                Session              @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  problem                InterviewProblem?    @relation(fields: [problemId], references: [id], onDelete: SetNull)
   participant            Participant?         @relation(fields: [participantId], references: [id], onDelete: SetNull)
   document               EditorDocument       @relation(fields: [documentId], references: [id], onDelete: Cascade)
   outputEvidence         EvidenceObject?      @relation("CodeSubmissionOutputEvidence", fields: [outputEvidenceObjectId], references: [id], onDelete: SetNull)
 
   @@index([sessionId, createdAt])
+  @@index([problemId])
   @@index([participantId])
   @@index([documentId])
   @@index([outputEvidenceObjectId])

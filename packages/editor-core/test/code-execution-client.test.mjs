@@ -96,6 +96,73 @@ test("code execution client includes optional persistence context", async () => 
   });
 });
 
+test("code execution client includes optional execution mode", async () => {
+  const fakeFetch = createFakeFetch({
+    status: 201,
+    body: {
+      execution: acceptedExecution(),
+    },
+  });
+  const client = createCodeExecutionClient({
+    baseUrl: "http://api.test",
+    token: "jwt-token",
+    fetch: fakeFetch.fetchImpl,
+  });
+
+  await client.execute({
+    languageId: 63,
+    sourceCode: "function twoSum() { return [0, 1]; }",
+    executionMode: "submit",
+  });
+
+  assert.deepEqual(fakeFetch.calls[0].body, {
+    languageId: 63,
+    sourceCode: "function twoSum() { return [0, 1]; }",
+    stdin: "",
+    executionMode: "submit",
+  });
+});
+
+test("code execution client lists persisted submissions", async () => {
+  const fakeFetch = createFakeFetch({
+    status: 200,
+    body: {
+      submissions: [
+        {
+          id: "submission-a",
+          sessionId: "session-a",
+          problemId: "problem-a",
+          participantId: "participant-a",
+          documentId: "document-a",
+          languageId: 63,
+          executionMode: "submit",
+          status: "Wrong Answer",
+          timeMs: 12,
+          memoryKb: 1024,
+          createdAt: "2026-07-13T00:00:00.000Z",
+        },
+      ],
+    },
+  });
+  const client = createCodeExecutionClient({
+    baseUrl: "http://api.test",
+    token: "jwt-token",
+    fetch: fakeFetch.fetchImpl,
+  });
+
+  const submissions = await client.listSubmissions({
+    sessionId: "session-a",
+    documentId: "document-a",
+    limit: 10,
+  });
+
+  assert.equal(fakeFetch.calls[0].url, "http://api.test/code-executions?sessionId=session-a&documentId=document-a&limit=10");
+  assert.equal(fakeFetch.calls[0].method, "GET");
+  assert.equal(fakeFetch.calls[0].headers.get("Authorization"), "Bearer jwt-token");
+  assert.equal(fakeFetch.calls[0].headers.get("Accept"), "application/json");
+  assert.deepEqual(submissions, fakeFetch.result.body.submissions);
+});
+
 test("code execution client maps proxy errors to typed errors", async () => {
   const fakeFetch = createFakeFetch({
     status: 504,
@@ -175,6 +242,7 @@ function createFakeFetch(result) {
   return {
     calls,
     fetchImpl,
+    result,
   };
 }
 

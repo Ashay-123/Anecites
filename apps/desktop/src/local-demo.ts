@@ -1,5 +1,4 @@
 import { normalizeJoinSessionInput, type NormalizedJoinSessionInput } from "./session.js";
-import { type LocalDemoProblem } from "@anecites/shared";
 
 const LOCAL_DEMO_API_BASE_URL = "http://127.0.0.1:3000";
 const LOCAL_DEMO_COLLAB_BASE_URL = "ws://127.0.0.1:3001";
@@ -24,13 +23,6 @@ export interface LocalDemoWorkspaceState {
   codeEditorOpen: boolean;
 }
 
-export interface LocalDemoProblemDetails {
-  problem: LocalDemoProblem;
-  starterCode: string;
-  languageId: number;
-  documentId: string;
-}
-
 export interface JoinLocalDemoMeetingRequest {
   code: string;
   password: string;
@@ -53,6 +45,7 @@ export async function hostLocalDemoMeeting(fetchImpl: FetchLike = fetch): Promis
       headers: {
         "Content-Type": "application/json",
       },
+      body: JSON.stringify({}),
       signal: AbortSignal.timeout(LOCAL_DEMO_REQUEST_TIMEOUT_MS),
     },
     fetchImpl,
@@ -111,27 +104,6 @@ export async function getLocalDemoWorkspaceState(
   );
 
   return parseWorkspaceState(body);
-}
-
-export async function getLocalDemoProblem(
-  request: LocalDemoWorkspaceStateRequest,
-  fetchImpl: FetchLike = fetch,
-): Promise<LocalDemoProblemDetails> {
-  const sessionId = requireNonEmptyString(request.sessionId);
-  const authToken = requireNonEmptyString(request.authToken);
-  const body = await requestJson(
-    `${LOCAL_DEMO_API_BASE_URL}/local-demo/meetings/problem?sessionId=${encodeURIComponent(sessionId)}`,
-    {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${authToken}`,
-      },
-      signal: AbortSignal.timeout(LOCAL_DEMO_REQUEST_TIMEOUT_MS),
-    },
-    fetchImpl,
-  );
-
-  return parseProblemDetails(body);
 }
 
 export async function updateLocalDemoWorkspaceState(
@@ -226,59 +198,6 @@ function parseWorkspaceState(value: unknown): LocalDemoWorkspaceState {
   };
 }
 
-function parseProblemDetails(value: unknown): LocalDemoProblemDetails {
-  const record = requireRecord(value);
-  const problem = parseProblem(record.problem);
-  const starterCode = requireString(record.starterCode);
-  const languageId = requirePositiveInteger(record.languageId);
-  const documentId = requireString(record.documentId);
-
-  return {
-    problem,
-    starterCode,
-    languageId,
-    documentId,
-  };
-}
-
-function parseProblem(value: unknown): LocalDemoProblem {
-  const record = requireRecord(value);
-  const title = requireString(record.title);
-  const difficulty = requireString(record.difficulty);
-  const prompt = requireString(record.prompt);
-  const examples = requireArray(record.examples).map(parseProblemExample);
-  const testcases = requireArray(record.testcases).map(parseProblemTestcase);
-  const constraints = requireArray(record.constraints).map(requireString);
-
-  return {
-    title,
-    difficulty,
-    prompt,
-    examples,
-    testcases,
-    constraints,
-  };
-}
-
-function parseProblemExample(value: unknown) {
-  const record = requireRecord(value);
-
-  return {
-    input: requireString(record.input),
-    output: requireString(record.output),
-  };
-}
-
-function parseProblemTestcase(value: unknown) {
-  const record = requireRecord(value);
-
-  return {
-    nums: requireArray(record.nums).map(requireNumber),
-    target: requireNumber(record.target),
-    expected: requireArray(record.expected).map(requireNumber),
-  };
-}
-
 function requireNonEmptyString(value: string): string {
   const normalized = value.trim();
 
@@ -298,20 +217,6 @@ function requireRecord(value: unknown): Record<string, unknown> {
 
 function requireString(value: unknown): string {
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error("Local demo response is invalid");
-  }
-  return value;
-}
-
-function requireNumber(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error("Local demo response is invalid");
-  }
-  return value;
-}
-
-function requireArray(value: unknown): unknown[] {
-  if (!Array.isArray(value)) {
     throw new Error("Local demo response is invalid");
   }
   return value;

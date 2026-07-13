@@ -24,6 +24,8 @@ export {
   type CodeExecutionResult,
   type CodeExecutionStatus,
   type CodeExecutionSubmission,
+  type CodeExecutionSubmissionListRequest,
+  type CodeExecutionSubmissionRecord,
 } from "./code-execution-client.js";
 export {
   createEditorPasteBlockedTelemetryEvent,
