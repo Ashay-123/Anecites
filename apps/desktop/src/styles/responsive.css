@@ -96,9 +96,13 @@
     flex-wrap: wrap;
   }
 
-  .meeting-credentials {
+  .meeting-invite {
     order: 3;
     width: 100%;
+  }
+
+  .meeting-credentials {
+    flex: 1;
   }
 
   .meeting-credentials > div {

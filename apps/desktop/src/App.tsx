@@ -11,9 +11,11 @@ import {
   type NormalizedJoinSessionInput,
 } from "./session.js";
 import {
+  createLocalDemoJoinLink,
   getLocalDemoWorkspaceState,
   hostLocalDemoMeeting,
   joinLocalDemoMeeting,
+  readLocalDemoJoinCode,
   updateLocalDemoWorkspaceState,
   type LocalDemoMeetingCredentials,
 } from "./local-demo.js";
@@ -70,38 +72,52 @@ import {
 } from "./meeting-types.js";
 import { readShellIdentity } from "./ui/app-shell.js";
 import { Badge, Button, Field, Input } from "./ui/primitives.js";
+import { canHostLocalDemo } from "./public-demo.js";
 
 type DemoView = "home" | "candidate";
 type DemoRequestStatus = "idle" | "loading" | "error";
+type InviteCopyStatus = "idle" | "copied" | "error";
 
 export interface AppProps {
   initialSession?: NormalizedJoinSessionInput | null;
   initialHostedMeeting?: LocalDemoMeetingCredentials | null;
   initialCodeEditorOpen?: boolean;
+  initialJoinCode?: string | null;
+  hostInterviewAvailableOverride?: boolean;
   nativeMonitoringAvailableOverride?: boolean;
+  writeClipboardText?: (value: string) => Promise<void>;
 }
 
 export function App({
   initialSession = null,
   initialHostedMeeting = null,
   initialCodeEditorOpen = false,
+  initialJoinCode,
+  hostInterviewAvailableOverride,
   nativeMonitoringAvailableOverride,
+  writeClipboardText = copyTextToClipboard,
 }: AppProps = {}): React.ReactElement {
+  const [inviteCode] = useState<string | null>(() => {
+    const code = initialJoinCode ?? readBrowserJoinCode();
+    return code && /^\d{6}$/.test(code.trim()) ? code.trim() : null;
+  });
+  const hostInterviewAvailable = hostInterviewAvailableOverride ?? canHostLocalDemo(readBrowserPageUrl());
+  const [session, setSession] = useState<NormalizedJoinSessionInput | null>(initialSession);
   const document = useMemo(
     () =>
       createEditorYjsDocument({
-        documentId: "local-draft",
+        documentId: session?.documentId ?? "local-draft",
         initialText: "",
       }),
-    [],
+    [session?.documentId],
   );
-  const [demoView, setDemoView] = useState<DemoView>("home");
+  const [demoView, setDemoView] = useState<DemoView>(inviteCode ? "candidate" : "home");
   const [demoRequestStatus, setDemoRequestStatus] = useState<DemoRequestStatus>("idle");
   const [demoError, setDemoError] = useState<string | null>(null);
-  const [meetingCode, setMeetingCode] = useState("");
+  const [meetingCode, setMeetingCode] = useState(inviteCode ?? "");
   const [meetingPassword, setMeetingPassword] = useState("");
   const [hostedMeeting, setHostedMeeting] = useState<LocalDemoMeetingCredentials | null>(initialHostedMeeting);
-  const [session, setSession] = useState<NormalizedJoinSessionInput | null>(initialSession);
+  const [inviteCopyStatus, setInviteCopyStatus] = useState<InviteCopyStatus>("idle");
   const [codeEditorOpen, setCodeEditorOpen] = useState(initialCodeEditorOpen);
   const [workspaceStateError, setWorkspaceStateError] = useState<string | null>(null);
   const [execution, setExecution] = useState<CodeExecutionResult>(emptyExecution);
@@ -136,6 +152,30 @@ export function App({
     },
     [],
   );
+
+  useEffect(() => () => document.destroy(), [document]);
+
+  useEffect(() => {
+    if (session) {
+      return;
+    }
+
+    const handleHashChange = () => {
+      const code = readBrowserJoinCode();
+      if (!code) {
+        return;
+      }
+
+      setMeetingCode(code);
+      setMeetingPassword("");
+      setDemoError(null);
+      setDemoRequestStatus("idle");
+      setDemoView("candidate");
+    };
+
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, [session]);
 
   useEffect(() => {
     if (!session) {
@@ -269,8 +309,10 @@ export function App({
     connection: NormalizedJoinSessionInput,
     meeting: LocalDemoMeetingCredentials | null,
   ): void {
+    clearBrowserJoinLink();
     setSession(connection);
     setHostedMeeting(meeting);
+    setInviteCopyStatus("idle");
     setCodeEditorOpen(false);
     setWorkspaceStateError(null);
     setDemoRequestStatus("idle");
@@ -299,6 +341,7 @@ export function App({
     await disconnectVideo();
     setSession(null);
     setHostedMeeting(null);
+    setInviteCopyStatus("idle");
     setDemoView("home");
     setDemoRequestStatus("idle");
     setDemoError(null);
@@ -307,6 +350,20 @@ export function App({
     setCodeEditorOpen(false);
     setWorkspaceStateError(null);
     resetWorkspaceState();
+  }
+
+  async function copyHostedMeetingLink(): Promise<void> {
+    if (!hostedMeeting) {
+      return;
+    }
+
+    try {
+      const link = hostedMeeting.joinUrl ?? createLocalDemoJoinLink(hostedMeeting.code, readBrowserWebBaseUrl());
+      await writeClipboardText(link);
+      setInviteCopyStatus("copied");
+    } catch {
+      setInviteCopyStatus("error");
+    }
   }
 
   async function connectVideo(): Promise<void> {
@@ -687,6 +744,7 @@ export function App({
       return (
         <>
           <LandingPage
+            canHostInterview={hostInterviewAvailable}
             loading={demoRequestStatus === "loading"}
             onHostInterview={() => void hostDemoSession()}
             onJoinInterview={() => {
@@ -746,9 +804,12 @@ export function App({
                 variant="ghost"
                 disabled={demoRequestStatus === "loading"}
                 onClick={() => {
+                  clearBrowserJoinLink();
                   setDemoView("home");
                   setDemoError(null);
                   setDemoRequestStatus("idle");
+                  setMeetingCode("");
+                  setMeetingPassword("");
                 }}
               >
                 Back
@@ -788,16 +849,38 @@ export function App({
         </div>
 
         {hostedMeeting ? (
-          <dl className="meeting-credentials" aria-label="Candidate joining credentials">
-            <div>
-              <dt>Code</dt>
-              <dd>{hostedMeeting.code}</dd>
-            </div>
-            <div>
-              <dt>Password</dt>
-              <dd>{hostedMeeting.password}</dd>
-            </div>
-          </dl>
+          <div className="meeting-invite">
+            <dl className="meeting-credentials" aria-label="Candidate joining credentials">
+              <div>
+                <dt>Code</dt>
+                <dd>{hostedMeeting.code}</dd>
+              </div>
+              <div>
+                <dt>Password</dt>
+                <dd>{hostedMeeting.password}</dd>
+              </div>
+            </dl>
+            <Button
+              className="meeting-copy-link"
+              variant="secondary"
+              size="small"
+              onClick={() => void copyHostedMeetingLink()}
+              aria-label="Copy candidate join link"
+            >
+              {inviteCopyStatus === "copied"
+                ? "Copied"
+                : inviteCopyStatus === "error"
+                  ? "Copy failed"
+                  : "Copy link"}
+            </Button>
+            <span className="sr-only" role="status" aria-live="polite">
+              {inviteCopyStatus === "copied"
+                ? "Candidate join link copied"
+                : inviteCopyStatus === "error"
+                  ? "Candidate join link could not be copied"
+                  : ""}
+            </span>
+          </div>
         ) : (
           <p className="meeting-waiting-copy">
             {codeEditorOpen
@@ -883,6 +966,61 @@ export function App({
       ) : null}
     </main>
   );
+}
+
+function readBrowserJoinCode(): string | null {
+  return typeof window === "undefined" ? null : readLocalDemoJoinCode(window.location.href);
+}
+
+function readBrowserPageUrl(): string | null {
+  return typeof window === "undefined" ? null : window.location.href;
+}
+
+function readBrowserWebBaseUrl(): string | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  return window.location.protocol === "http:" || window.location.protocol === "https:"
+    ? window.location.href
+    : undefined;
+}
+
+function clearBrowserJoinLink(): void {
+  if (typeof window === "undefined" || !readLocalDemoJoinCode(window.location.href)) {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  url.hash = "";
+  window.history.replaceState(window.history.state, "", url);
+}
+
+async function copyTextToClipboard(value: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  if (typeof globalThis.document === "undefined") {
+    throw new Error("Clipboard is unavailable");
+  }
+
+  const input = globalThis.document.createElement("textarea");
+  input.value = value;
+  input.readOnly = true;
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  globalThis.document.body.append(input);
+  input.select();
+
+  try {
+    if (!globalThis.document.execCommand("copy")) {
+      throw new Error("Clipboard is unavailable");
+    }
+  } finally {
+    input.remove();
+  }
 }
 
 function normalizeMediaTileKind(kind: string | undefined): LiveKitMediaTileKind | null {

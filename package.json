@@ -17,6 +17,8 @@
     "verify:root": "node scripts/verify-root.mjs",
     "verify:docker": "node scripts/verify-docker.mjs",
     "verify": "npm run verify:root && npm run verify:docker",
+    "demo:public:build": "npm run build --workspace @anecites/server && npm run build --workspace @anecites/collab && npm run build --workspace @anecites/desktop",
+    "demo:public": "node scripts/start-public-demo.mjs",
     "lint": "node scripts/run-workspace-script.mjs lint",
     "typecheck": "node scripts/run-workspace-script.mjs typecheck",
     "test": "node scripts/run-workspace-script.mjs test",

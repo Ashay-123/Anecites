@@ -8,6 +8,7 @@ export interface ServerConfig {
   apiPort: number;
   appOrigin: string;
   localDemoEnabled: boolean;
+  localDemoPublicBaseUrl: string | null;
   databaseUrl: string;
   redisUrl: string;
   rabbitmqUrl: string;
@@ -69,6 +70,7 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
   const nodeEnv = parseNodeEnv(env.NODE_ENV);
   const apiHost = env.API_HOST?.trim() || "0.0.0.0";
   const localDemoEnabled = parseBoolean("LOCAL_DEMO_ENABLED", env.LOCAL_DEMO_ENABLED, false);
+  const localDemoPublicBaseUrl = parseLocalDemoPublicBaseUrl(env.LOCAL_DEMO_PUBLIC_BASE_URL);
   const codeExecutionProvider = parseCodeExecutionProvider(env.CODE_EXECUTION_PROVIDER);
   const judge0AuthToken = parseOptionalString(env.JUDGE0_AUTHN_TOKEN);
   const judge0AuthHeader = parseOptionalHeaderName(env.JUDGE0_AUTHN_HEADER) ?? (judge0AuthToken ? "X-Judge0-Token" : null);
@@ -104,12 +106,17 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
     throw new Error("LOCAL_DEMO_ENABLED requires API_HOST to be a loopback address");
   }
 
+  if (localDemoPublicBaseUrl && !localDemoEnabled) {
+    throw new Error("LOCAL_DEMO_PUBLIC_BASE_URL requires LOCAL_DEMO_ENABLED=true");
+  }
+
   return {
     nodeEnv,
     apiHost,
     apiPort: parsePort(env.API_PORT ?? "3000"),
     appOrigin: parseRequiredUrl("APP_ORIGIN", env.APP_ORIGIN),
     localDemoEnabled,
+    localDemoPublicBaseUrl,
     databaseUrl: parseRequiredUrl("DATABASE_URL", env.DATABASE_URL),
     redisUrl: parseRequiredUrl("REDIS_URL", env.REDIS_URL),
     rabbitmqUrl: parseRequiredUrl("RABBITMQ_URL", env.RABBITMQ_URL),
@@ -258,6 +265,26 @@ function parseOptionalUrl(fieldName: string, value: string | undefined): string 
   } catch {
     throw new Error(`${fieldName} must be a valid URL`);
   }
+}
+
+function parseLocalDemoPublicBaseUrl(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error("LOCAL_DEMO_PUBLIC_BASE_URL must be a valid HTTPS URL");
+  }
+
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+    throw new Error("LOCAL_DEMO_PUBLIC_BASE_URL must be a valid HTTPS URL without credentials, query, or fragment");
+  }
+
+  return url.toString().replace(/\/$/, "");
 }
 
 function deriveLiveKitApiUrl(livekitUrl: string | null): string | null {

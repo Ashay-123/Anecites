@@ -498,6 +498,43 @@ test("collab telemetry flushes small insert aggregates without raw atomic events
   }
 });
 
+test("collab remains available when telemetry sinks reject", async () => {
+  const server = await startServer({
+    telemetry: {
+      atomicInsertThreshold: 1,
+      recordRawEvent: async () => {
+        throw new Error("raw telemetry unavailable");
+      },
+      flushAggregate: async () => {
+        throw new Error("aggregate telemetry unavailable");
+      },
+    },
+  });
+  const token = await mintToken("participant-1", "candidate");
+
+  try {
+    const first = await connect(server.port, "session-a", token, {
+      documentId: "document-a",
+    });
+    const second = await connect(server.port, "session-a", token, {
+      documentId: "document-a",
+    });
+    await drainSnapshot(first);
+    await drainSnapshot(second);
+
+    first.send(JSON.stringify({ type: "sync:update", update: createTextUpdate("sync survives telemetry") }));
+    const message = await waitForMessage(second, "sync:update");
+
+    assert.equal(message.type, "sync:update");
+    assert.equal(server.httpServer.listening, true);
+
+    first.close();
+    second.close();
+  } finally {
+    await server.close();
+  }
+});
+
 test("collab server records replay evidence for Yjs updates", async () => {
   const replayRecords = [];
   const server = await startServer({

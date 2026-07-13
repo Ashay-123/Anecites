@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createLocalDemoJoinLink,
   getLocalDemoWorkspaceState,
   hostLocalDemoMeeting,
   joinLocalDemoMeeting,
+  readLocalDemoJoinCode,
+  resolveLocalDemoServiceUrls,
   updateLocalDemoWorkspaceState,
 } from "../dist/local-demo.js";
 
@@ -54,6 +57,7 @@ test("hostLocalDemoMeeting creates a meeting without exposing technical inputs",
     code: "123456",
     password: "ABCD2345",
     expiresAt: "2026-07-11T20:00:00.000Z",
+    joinUrl: null,
   });
   assert.equal(result.connection.sessionId, "session-a");
 });
@@ -79,6 +83,36 @@ test("joinLocalDemoMeeting sends only code and password and returns candidate bo
   assert.equal(result.role, "candidate");
   assert.equal(result.meeting, null);
   assert.equal(result.connection.participantId, "candidate-a");
+});
+
+test("local demo join links contain only a validated meeting code", () => {
+  const link = createLocalDemoJoinLink(
+    " 123456 ",
+    "http://127.0.0.1:5173/?password=ABCD2345#old-fragment",
+  );
+
+  assert.equal(link, "http://127.0.0.1:5173/#join?code=123456");
+  assert.equal(readLocalDemoJoinCode(link), "123456");
+  assert.equal(readLocalDemoJoinCode("http://127.0.0.1:5173/#join?code=invalid"), null);
+  assert.equal(readLocalDemoJoinCode("http://127.0.0.1:5173/#other?code=123456"), null);
+  assert.equal(readLocalDemoJoinCode("http://127.0.0.1:5173/#join?code=123456&password=ABCD2345"), null);
+  assert.doesNotMatch(link, /password|ABCD2345/);
+  assert.throws(() => createLocalDemoJoinLink("123"), /meeting code is invalid/);
+});
+
+test("public demo pages use same-origin API and secure WebSocket routes", () => {
+  assert.deepEqual(resolveLocalDemoServiceUrls("https://demo.trycloudflare.com/#join?code=123456"), {
+    apiBaseUrl: "https://demo.trycloudflare.com/api",
+    collabBaseUrl: "wss://demo.trycloudflare.com/collab",
+  });
+  assert.deepEqual(resolveLocalDemoServiceUrls("http://127.0.0.1:5173/"), {
+    apiBaseUrl: "http://127.0.0.1:5173/api",
+    collabBaseUrl: "ws://127.0.0.1:5173/collab",
+  });
+  assert.deepEqual(resolveLocalDemoServiceUrls("tauri://localhost"), {
+    apiBaseUrl: "http://127.0.0.1:3000",
+    collabBaseUrl: "ws://127.0.0.1:3001",
+  });
 });
 
 test("local demo client validates credentials and surfaces controlled errors", async () => {

@@ -23,6 +23,7 @@
 
 .meeting-brand,
 .meeting-topbar-actions,
+.meeting-invite,
 .meeting-credentials {
   display: flex;
   min-width: 0;
@@ -60,6 +61,10 @@
 
 .meeting-waiting-copy {
   margin: 0;
+}
+
+.meeting-invite {
+  gap: 8px;
 }
 
 .meeting-credentials {
@@ -228,6 +233,11 @@
   gap: 0;
   overflow: hidden;
   background: var(--background);
+}
+
+.meeting-copy-link {
+  min-width: 84px;
+  flex: 0 0 auto;
 }
 
 .candidate-code-pane {

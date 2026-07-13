@@ -13,6 +13,7 @@ function testConfig(localDemoEnabled = true) {
     API_PORT: "3000",
     APP_ORIGIN: "http://127.0.0.1:5173",
     LOCAL_DEMO_ENABLED: String(localDemoEnabled),
+    LOCAL_DEMO_PUBLIC_BASE_URL: localDemoEnabled ? "https://demo.trycloudflare.com" : "",
     DATABASE_URL: databaseUrl,
     REDIS_URL: "redis://localhost:6379",
     RABBITMQ_URL: "amqp://anecites:anecites_dev_password@localhost:5672",
@@ -155,6 +156,10 @@ test("local demo host and candidate use code/password to receive real session bo
   assert.equal(hostResult.response.headers.get("access-control-allow-origin"), "http://127.0.0.1:5173");
   assert.match(hostResult.body.meeting.code, /^\d{6}$/);
   assert.match(hostResult.body.meeting.password, /^[A-Z2-9]{8}$/);
+  assert.equal(
+    hostResult.body.meeting.joinUrl,
+    `https://demo.trycloudflare.com/#join?code=${hostResult.body.meeting.code}`,
+  );
   assert.equal(hostResult.body.connection.role, "interviewer");
   assert.equal(typeof hostResult.body.connection.authToken, "string");
 
@@ -403,4 +408,30 @@ test("local demo routes are unavailable unless explicitly enabled", async (t) =>
 
   assert.equal(result.response.status, 404);
   assert.equal(result.body.error.code, "NOT_FOUND");
+});
+
+test("local demo join attempts are rate limited by public client address", async (t) => {
+  const app = createApp(testConfig(), {
+    logger: quietLogger(),
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  let result;
+  for (let attempt = 0; attempt < 31; attempt += 1) {
+    result = await jsonRequest(server, "/local-demo/meetings/join", {
+      method: "POST",
+      headers: {
+        "CF-Connecting-IP": "203.0.113.50",
+      },
+      body: JSON.stringify({
+        code: "123456",
+        password: "AAAAAAAA",
+      }),
+    });
+  }
+
+  assert.equal(result.response.status, 429);
+  assert.equal(result.body.error.code, "LOCAL_DEMO_RATE_LIMITED");
+  assert.equal(Number(result.response.headers.get("retry-after")) > 0, true);
 });

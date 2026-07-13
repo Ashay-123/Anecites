@@ -1,6 +1,6 @@
 import { createHash, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import { Prisma, type PrismaClient } from "@anecites/db";
 import {
   type LocalDemoProblem,
@@ -24,6 +24,10 @@ const DEMO_STORE_LIMIT = 100;
 const DEMO_PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const DEMO_CODE_PATTERN = /^\d{6}$/;
 const DEMO_PASSWORD_PATTERN = /^[A-Z2-9]{8}$/;
+const DEMO_RATE_LIMIT_WINDOW_MS = 60_000;
+const DEMO_HOST_RATE_LIMIT = 10;
+const DEMO_JOIN_RATE_LIMIT = 30;
+const DEMO_RATE_LIMIT_BUCKET_CAPACITY = 1_000;
 
 interface LocalDemoMeetingRecord {
   code: string;
@@ -52,6 +56,8 @@ interface LocalDemoWorkspaceStateBody {
 export function createLocalDemoRouter(prisma: PrismaClient, config: ServerConfig): Router {
   const router = Router();
   const meetings = new Map<string, LocalDemoMeetingRecord>();
+  const hostRateLimit = createFixedWindowRateLimit(DEMO_HOST_RATE_LIMIT);
+  const joinRateLimit = createFixedWindowRateLimit(DEMO_JOIN_RATE_LIMIT);
 
   router.get("/problems", async (_request, response, next) => {
     try {
@@ -70,7 +76,7 @@ export function createLocalDemoRouter(prisma: PrismaClient, config: ServerConfig
     }
   });
 
-  router.post("/meetings", async (request, response, next) => {
+  router.post("/meetings", hostRateLimit, async (request, response, next) => {
     try {
       removeExpiredMeetings(meetings);
       enforceStoreLimit(meetings);
@@ -147,6 +153,7 @@ export function createLocalDemoRouter(prisma: PrismaClient, config: ServerConfig
           code,
           password,
           expiresAt: expiresAt.toISOString(),
+          joinUrl: createPublicJoinUrl(config.localDemoPublicBaseUrl, code),
         },
         connection: {
           sessionId: session.id,
@@ -162,7 +169,7 @@ export function createLocalDemoRouter(prisma: PrismaClient, config: ServerConfig
     }
   });
 
-  router.post("/meetings/join", async (request, response, next) => {
+  router.post("/meetings/join", joinRateLimit, async (request, response, next) => {
     try {
       removeExpiredMeetings(meetings);
       const body = parseJoinBody(request.body);
@@ -310,6 +317,72 @@ export function createLocalDemoRouter(prisma: PrismaClient, config: ServerConfig
   });
 
   return router;
+}
+
+interface RateLimitBucket {
+  count: number;
+  resetAt: number;
+}
+
+function createFixedWindowRateLimit(limit: number): RequestHandler {
+  const buckets = new Map<string, RateLimitBucket>();
+
+  return (request, response, next) => {
+    const now = Date.now();
+    pruneExpiredRateLimitBuckets(buckets, now);
+    const key = readRateLimitKey(request.header("cf-connecting-ip"), request.socket.remoteAddress);
+    const current = buckets.get(key);
+    const bucket = current && current.resetAt > now
+      ? current
+      : { count: 0, resetAt: now + DEMO_RATE_LIMIT_WINDOW_MS };
+
+    if (bucket.count >= limit) {
+      response.setHeader("Retry-After", String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1_000))));
+      response.status(429).json({
+        error: {
+          code: "LOCAL_DEMO_RATE_LIMITED",
+          message: "Too many local demo requests. Try again shortly.",
+        },
+      });
+      return;
+    }
+
+    bucket.count += 1;
+    buckets.set(key, bucket);
+    next();
+  };
+}
+
+function pruneExpiredRateLimitBuckets(buckets: Map<string, RateLimitBucket>, now: number): void {
+  for (const [key, bucket] of buckets) {
+    if (bucket.resetAt <= now) {
+      buckets.delete(key);
+    }
+  }
+
+  if (buckets.size < DEMO_RATE_LIMIT_BUCKET_CAPACITY) {
+    return;
+  }
+
+  const oldestKey = buckets.keys().next().value;
+  if (typeof oldestKey === "string") {
+    buckets.delete(oldestKey);
+  }
+}
+
+function readRateLimitKey(cloudflareAddress: string | undefined, remoteAddress: string | undefined): string {
+  const candidate = cloudflareAddress?.split(",", 1)[0]?.trim() || remoteAddress?.trim() || "unknown";
+  return candidate.slice(0, 128);
+}
+
+function createPublicJoinUrl(publicBaseUrl: string | null, code: string): string | null {
+  if (!publicBaseUrl) {
+    return null;
+  }
+
+  const url = new URL(publicBaseUrl);
+  url.hash = `join?${new URLSearchParams({ code }).toString()}`;
+  return url.toString();
 }
 
 async function ensureLocalDemoProblems(prisma: PrismaClient) {

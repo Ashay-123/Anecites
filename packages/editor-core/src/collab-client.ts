@@ -60,11 +60,12 @@ export function connectEditorCollabSession(
   let removeCloseListener = () => {};
 
   const ready = new Promise<void>((resolve, reject) => {
-    const handleOpen = () => {
-      resolve();
-    };
     const handleMessage = (event: unknown) => {
-      handleSyncMessage(options.document, event);
+      const message = handleSyncMessage(options.document, event);
+
+      if (message?.type === "sync:snapshot") {
+        resolve();
+      }
     };
     const handleError = (event: unknown) => {
       if (!closed) {
@@ -77,7 +78,6 @@ export function connectEditorCollabSession(
       }
     };
 
-    removeOpenListener = addSocketListener(socket, "open", handleOpen);
     removeMessageListener = addSocketListener(socket, "message", handleMessage);
     removeErrorListener = addSocketListener(socket, "error", handleError);
     removeCloseListener = addSocketListener(socket, "close", handleClose);
@@ -122,14 +122,15 @@ function buildCollabUrl(options: EditorCollabSessionOptions): string {
   return url.toString();
 }
 
-function handleSyncMessage(document: EditorYjsDocument, event: unknown): void {
+function handleSyncMessage(document: EditorYjsDocument, event: unknown): SyncMessage | null {
   const message = parseSyncMessage(extractMessageData(event));
 
   if (!message) {
-    return;
+    return null;
   }
 
   applyRemoteYjsUpdate(document, base64ToBytes(message.update));
+  return message;
 }
 
 function parseSyncMessage(data: string): SyncMessage | null {
@@ -193,11 +194,24 @@ function addSocketListener(
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64");
+  let binary = "";
+
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return globalThis.btoa(binary);
 }
 
 function base64ToBytes(value: string): Uint8Array {
-  return new Uint8Array(Buffer.from(value, "base64"));
+  const binary = globalThis.atob(value);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return bytes;
 }
 
 function requireNonEmptyString(name: string, value: string): string {

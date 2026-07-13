@@ -9,6 +9,7 @@ const validEnv = {
   API_PORT: "3000",
   APP_ORIGIN: "http://localhost:5173",
   LOCAL_DEMO_ENABLED: "false",
+  LOCAL_DEMO_PUBLIC_BASE_URL: "",
   DATABASE_URL: "postgresql://anecites:anecites_dev_password@localhost:5432/anecites",
   REDIS_URL: "redis://localhost:6379",
   RABBITMQ_URL: "amqp://anecites:anecites_dev_password@localhost:5672",
@@ -45,6 +46,7 @@ test("loadServerConfig accepts the required API server environment", () => {
     apiPort: 3000,
     appOrigin: "http://localhost:5173",
     localDemoEnabled: false,
+    localDemoPublicBaseUrl: null,
     databaseUrl: validEnv.DATABASE_URL,
     redisUrl: validEnv.REDIS_URL,
     rabbitmqUrl: validEnv.RABBITMQ_URL,
@@ -123,6 +125,36 @@ test("loadServerConfig restricts local demo mode to loopback hosts", () => {
         LOCAL_DEMO_ENABLED: "true",
       }),
     /LOCAL_DEMO_ENABLED requires API_HOST to be a loopback address/,
+  );
+});
+
+test("loadServerConfig validates optional public demo URLs", () => {
+  assert.equal(
+    loadServerConfig({
+      ...validEnv,
+      LOCAL_DEMO_ENABLED: "true",
+      LOCAL_DEMO_PUBLIC_BASE_URL: "https://demo.trycloudflare.com/",
+    }).localDemoPublicBaseUrl,
+    "https://demo.trycloudflare.com",
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        LOCAL_DEMO_ENABLED: "true",
+        LOCAL_DEMO_PUBLIC_BASE_URL: "http://demo.example.com",
+      }),
+    /LOCAL_DEMO_PUBLIC_BASE_URL must be a valid HTTPS URL/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        LOCAL_DEMO_PUBLIC_BASE_URL: "https://demo.example.com",
+      }),
+    /LOCAL_DEMO_PUBLIC_BASE_URL requires LOCAL_DEMO_ENABLED=true/,
   );
 });
 

@@ -5,6 +5,7 @@ import { Button } from "./ui/primitives.js";
 const logoUrl = "/Anecites_logo.png";
 
 interface LandingPageProps {
+  canHostInterview: boolean;
   loading: boolean;
   onHostInterview: () => void;
   onJoinInterview: () => void;
@@ -76,6 +77,7 @@ const faqs = [
 ] as const;
 
 export function LandingPage({
+  canHostInterview,
   loading,
   onHostInterview,
   onJoinInterview,
@@ -106,9 +108,11 @@ export function LandingPage({
             <p className="landing-support">Start a local interview now. No paid code-execution API is required.</p>
 
             <div className="landing-actions">
-              <Button loading={loading} onClick={onHostInterview}>
-                Host interview
-              </Button>
+              {canHostInterview ? (
+                <Button loading={loading} onClick={onHostInterview}>
+                  Host interview
+                </Button>
+              ) : null}
               <Button variant="secondary" disabled={loading} onClick={onJoinInterview}>
                 Join interview
               </Button>

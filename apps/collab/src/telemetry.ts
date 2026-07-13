@@ -73,7 +73,8 @@ export function trackYjsTextChange(
   const isAtomicInsert = insertedCharacterCount > atomicInsertThreshold;
 
   if (isAtomicInsert) {
-    void options.recordRawEvent?.(
+    runBestEffortTelemetrySink(
+      options.recordRawEvent,
       createAtomicInsertTelemetryEvent({
         sessionId: context.sessionId,
         participantId: context.principal.subject,
@@ -87,7 +88,8 @@ export function trackYjsTextChange(
 
   const window = telemetryWindow(now, options.aggregateWindowMs ?? defaultAggregateWindowMs);
 
-  void options.flushAggregate?.(
+  runBestEffortTelemetrySink(
+    options.flushAggregate,
     createRollingEditorTelemetryAggregate({
       sessionId: context.sessionId,
       documentId: context.documentId,
@@ -100,6 +102,21 @@ export function trackYjsTextChange(
       maxInsertSize: insertedCharacterCount,
     }),
   );
+}
+
+function runBestEffortTelemetrySink<T>(
+  sink: ((value: T) => void | Promise<void>) | undefined,
+  value: T,
+): void {
+  if (!sink) {
+    return;
+  }
+
+  try {
+    void Promise.resolve(sink(value)).catch(() => undefined);
+  } catch {
+    // Telemetry must not interrupt editor collaboration.
+  }
 }
 
 function telemetryWindow(now: Date, requestedWindowMs: number): {

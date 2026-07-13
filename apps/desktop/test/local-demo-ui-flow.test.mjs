@@ -41,11 +41,39 @@ test("local demo interviewer sees only candidate joining credentials and the edi
   assert.match(html, /aria-label="Candidate joining credentials"/);
   assert.match(html, />123456</);
   assert.match(html, />ABCD2345</);
+  assert.match(html, /aria-label="Copy candidate join link"/);
+  assert.match(html, />Copy link</);
   assert.match(html, />Code editor</);
   assert.doesNotMatch(html, /Session ID/);
   assert.doesNotMatch(html, /Document ID/);
   assert.doesNotMatch(html, /Participant ID/);
   assert.doesNotMatch(html, /Auth token/);
+});
+
+test("local demo join links open the candidate form with only the meeting code prefilled", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(App, {
+      initialJoinCode: "123456",
+      nativeMonitoringAvailableOverride: false,
+    }),
+  );
+
+  assert.match(html, /<h1 id="demo-title">Join interview<\/h1>/);
+  assert.match(html, /id="meeting-code"[^>]*value="123456"/);
+  assert.match(html, /id="meeting-password"[^>]*value=""/);
+  assert.doesNotMatch(html, /ABCD2345/);
+});
+
+test("public demo landing is join-only", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(App, {
+      hostInterviewAvailableOverride: false,
+      nativeMonitoringAvailableOverride: false,
+    }),
+  );
+
+  assert.match(html, />Join interview</);
+  assert.doesNotMatch(html, />Host interview<\/button>/);
 });
 
 test("local demo editor-open state renders a simple editor and output surface", () => {
@@ -66,6 +94,7 @@ test("local demo editor-open state renders a simple editor and output surface", 
   assert.doesNotMatch(html, />Submit</);
   assert.match(html, /aria-label="Shared code editor"/);
   assert.match(html, /data-anecites-editor="monaco-collab"/);
+  assert.match(html, /data-document-id="document-a"/);
   assert.match(html, /data-anecites-editor-input="true"/);
   assert.match(html, />Code editor</);
   assert.match(html, /class="candidate-run-button"[^>]*>Run</);
