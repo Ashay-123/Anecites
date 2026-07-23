@@ -1,0 +1,9 @@
+fastapi==0.139.0
+pydantic==2.13.4
+pydantic-core==2.46.4
+uvicorn==0.51.0
+boto3==1.43.45
+mediapipe==0.10.35
+opencv-contrib-python==5.0.0.93
+silero-vad==6.2.1
+pyannote.audio==4.0.7

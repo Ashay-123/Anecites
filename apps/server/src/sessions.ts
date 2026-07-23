@@ -2,26 +2,66 @@ import { Router, type Request, type Response } from "express";
 import { Prisma, type PrismaClient } from "@anecites/db";
 import {
   createNativeRiskSignals,
+  createNativeProhibitedApplicationMatch,
+  createGazeCalibrationStep,
+  createMediaConsentScopes,
   isPrivilegedUserRole,
   isSessionState,
   isValidSessionTransition,
   type NativeCaptureAffinityReport,
+  type NativeEnvironmentReport,
+  type NativeProhibitedApplicationMatch,
   type NativeRiskSignalReport,
   type NativeVirtualizationReport,
   type NativeVirtualizationSignal,
+  type MediaConsentScope,
   type ParticipantRole,
   type SessionState,
 } from "@anecites/shared";
 
 import { type AuthenticatedPrincipal } from "./auth.js";
 import { type ServerConfig } from "./config.js";
+import { createReviewerEvidencePlayback } from "./evidence-playback.js";
+import { type EvidenceStorage } from "./evidence-storage.js";
 import { HttpError } from "./http-error.js";
 import {
   createLiveKitJoinToken,
-  startLiveKitRoomRecording,
-  stopLiveKitRoomRecording,
   type LiveKitEgressClient,
 } from "./livekit.js";
+import {
+  listMonitoringTimeline,
+  recordCandidateMonitoringHeartbeat,
+  recordCandidateRiskEvent,
+  requireBoundNativeMonitoringPolicy,
+  startCandidateMonitoring,
+  stopCandidateMonitoring,
+} from "./monitoring.js";
+import { type MediaAnalysisPublisher } from "./media-analysis-publisher.js";
+import {
+  getMediaConsentRequirements,
+  getActiveSessionParticipantRole,
+  grantMediaConsent,
+  requireActiveInterviewerRecordingAccess,
+  requireActiveRecordingConsents,
+  revokeMediaConsent,
+} from "./media-consent.js";
+import {
+  acknowledgeGazeCalibrationStep,
+  startGazeCalibration,
+} from "./gaze-calibrations.js";
+import {
+  assertSessionAllowsParticipantJoin,
+  getLatestSessionRecording,
+  startSessionRecording,
+  stopActiveSessionRecording,
+  stopSessionRecording,
+  toSessionRecordingStatus,
+} from "./recording-lifecycle.js";
+import { buildNativeMonitoringPolicyManifest } from "./native-monitoring-policy.js";
+import {
+  LIVEKIT_EGRESS_COMPLETE,
+  publishRecordingMediaAnalysisJob,
+} from "./recording-analysis.js";
 import {
   createRiskSummary,
   isRiskSummaryReviewStatus,
@@ -88,8 +128,11 @@ export function createSessionRouter(
   prisma: PrismaClient,
   config: ServerConfig,
   liveKitEgressClient?: LiveKitEgressClient,
+  mediaAnalysisPublisher?: MediaAnalysisPublisher,
+  evidenceStorage?: EvidenceStorage | null,
 ): Router {
   const router = Router();
+  const nativeMonitoringPolicy = buildNativeMonitoringPolicyManifest(config);
 
   router.post("/", async (request, response, next) => {
     try {
@@ -138,6 +181,24 @@ export function createSessionRouter(
     }
   });
 
+  router.get("/:sessionId/evidence/:clipId", async (request, response, next) => {
+    try {
+      const principal = requireReviewerAccess(response);
+      const riskSummaryId = typeof request.query.riskSummaryId === "string"
+        ? request.query.riskSummaryId.trim()
+        : "";
+      const playback = await createReviewerEvidencePlayback(prisma, config, evidenceStorage ?? null, {
+        sessionId: requireParam(request.params.sessionId, "sessionId"),
+        evidenceObjectId: requireParam(request.params.clipId, "clipId"),
+        principalRole: principal.role,
+        ...(riskSummaryId ? { riskSummaryId } : {}),
+      });
+      response.status(200).json(playback);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.patch("/:sessionId/risk-summaries/:riskSummaryId/review", async (request, response, next) => {
     try {
       const principal = requireReviewerAccess(response);
@@ -157,10 +218,85 @@ export function createSessionRouter(
     }
   });
 
+  router.get("/:sessionId/monitoring-timeline", async (request, response, next) => {
+    try {
+      requireReviewerAccess(response);
+      const result = await listMonitoringTimeline(
+        prisma,
+        requireParam(request.params.sessionId, "sessionId"),
+        request.query.limit,
+      );
+      response.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sessionId/monitoring/start", async (request, response, next) => {
+    try {
+      const monitoring = await startCandidateMonitoring(
+        prisma,
+        requireAuthenticatedPrincipal(response),
+        requireParam(request.params.sessionId, "sessionId"),
+        request.body,
+        nativeMonitoringPolicy,
+      );
+      response.status(201).json(monitoring);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sessionId/monitoring/:monitoringConsentId/heartbeat", async (request, response, next) => {
+    try {
+      const heartbeat = await recordCandidateMonitoringHeartbeat(
+        prisma,
+        requireAuthenticatedPrincipal(response),
+        requireParam(request.params.sessionId, "sessionId"),
+        requireParam(request.params.monitoringConsentId, "monitoringConsentId"),
+        request.body,
+      );
+      response.status(201).json({ heartbeat });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sessionId/monitoring/:monitoringConsentId/events", async (request, response, next) => {
+    try {
+      const riskEvent = await recordCandidateRiskEvent(
+        prisma,
+        requireAuthenticatedPrincipal(response),
+        requireParam(request.params.sessionId, "sessionId"),
+        requireParam(request.params.monitoringConsentId, "monitoringConsentId"),
+        request.body,
+      );
+      response.status(201).json({ riskEvent });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sessionId/monitoring/:monitoringConsentId/stop", async (request, response, next) => {
+    try {
+      const monitoringConsent = await stopCandidateMonitoring(
+        prisma,
+        requireAuthenticatedPrincipal(response),
+        requireParam(request.params.sessionId, "sessionId"),
+        requireParam(request.params.monitoringConsentId, "monitoringConsentId"),
+        request.body,
+      );
+      response.status(200).json({ monitoringConsent });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post("/:sessionId/participants", async (request, response, next) => {
     try {
       const body = parseJoinSessionBody(request.body);
       await ensureSessionExists(prisma, request.params.sessionId);
+      await assertSessionAllowsParticipantJoin(prisma, request.params.sessionId);
 
       const user = await prisma.user.upsert({
         where: {
@@ -207,6 +343,92 @@ export function createSessionRouter(
     }
   });
 
+  router.get("/:sessionId/media-consent-requirements", async (request, response, next) => {
+    try {
+      const sessionId = requireParam(request.params.sessionId, "sessionId");
+      await ensureSessionExists(prisma, sessionId);
+      const requirements = await getMediaConsentRequirements(
+        prisma,
+        config,
+        requireAuthenticatedPrincipal(response),
+        sessionId,
+      );
+      response.status(200).json({ requirements });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sessionId/media-consent", async (request, response, next) => {
+    try {
+      const sessionId = requireParam(request.params.sessionId, "sessionId");
+      await ensureSessionExists(prisma, sessionId);
+      const body = parseMediaConsentBody(request.body);
+      const mediaConsent = await grantMediaConsent(
+        prisma,
+        config,
+        requireAuthenticatedPrincipal(response),
+        sessionId,
+        body.scopes,
+      );
+      response.status(201).json({ mediaConsent });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sessionId/media-consent/:mediaConsentId/revoke", async (request, response, next) => {
+    try {
+      const sessionId = requireParam(request.params.sessionId, "sessionId");
+      await ensureSessionExists(prisma, sessionId);
+      const mediaConsent = await revokeMediaConsent(
+        prisma,
+        requireAuthenticatedPrincipal(response),
+        sessionId,
+        requireParam(request.params.mediaConsentId, "mediaConsentId"),
+      );
+      response.status(200).json({ mediaConsent });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sessionId/gaze-calibrations", async (request, response, next) => {
+    try {
+      const sessionId = requireParam(request.params.sessionId, "sessionId");
+      await ensureSessionExists(prisma, sessionId);
+      const result = await startGazeCalibration(
+        prisma,
+        config,
+        requireAuthenticatedPrincipal(response),
+        sessionId,
+      );
+      response.status(result.created ? 201 : 200).json({
+        gazeCalibration: result.gazeCalibration,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/:sessionId/gaze-calibrations/:gazeCalibrationId/steps", async (request, response, next) => {
+    try {
+      const sessionId = requireParam(request.params.sessionId, "sessionId");
+      await ensureSessionExists(prisma, sessionId);
+      const gazeCalibration = await acknowledgeGazeCalibrationStep(
+        prisma,
+        config,
+        requireAuthenticatedPrincipal(response),
+        sessionId,
+        requireParam(request.params.gazeCalibrationId, "gazeCalibrationId"),
+        parseGazeCalibrationStepBody(request.body),
+      );
+      response.status(200).json({ gazeCalibration });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post("/:sessionId/livekit-token", async (request, response, next) => {
     try {
       const body = parseLiveKitTokenBody(request.body);
@@ -231,27 +453,43 @@ export function createSessionRouter(
     }
   });
 
+  router.get("/:sessionId/livekit-recording", async (request, response, next) => {
+    try {
+      const principal = requireAuthenticatedPrincipal(response);
+      const sessionId = requireParam(request.params.sessionId, "sessionId");
+      const participantRole = await getActiveSessionParticipantRole(prisma, principal, sessionId);
+      const recording = await getLatestSessionRecording(prisma, sessionId);
+
+      response.status(200).json({
+        recordingStatus: recording ? toSessionRecordingStatus(recording) : null,
+        recordingControl: participantRole === "interviewer" && principal.role === "interviewer" && recording?.state === "active"
+          ? { egressId: recording.egressId }
+          : null,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post("/:sessionId/livekit-recording", async (request, response, next) => {
     try {
+      const principal = requireAuthenticatedPrincipal(response);
       const session = await findSessionOrThrow(prisma, request.params.sessionId);
-      const recording = await startLiveKitRoomRecording(
+      await requireActiveInterviewerRecordingAccess(prisma, principal, session.id);
+      const mediaConsentSnapshots = await requireActiveRecordingConsents(prisma, config, session.id);
+      const result = await startSessionRecording(
+        prisma,
         config,
         {
           sessionId: session.id,
+          mediaConsentSnapshots,
         },
         liveKitEgressClient,
       );
-      const evidenceObject = await createRecordingEvidenceObject(prisma, config, {
-        sessionId: session.id,
-        recording,
-      });
 
       response.status(201).json({
-        recording: {
-          ...recording,
-          evidenceObjectId: evidenceObject.id,
-          storageKey: evidenceObject.storageKey,
-        },
+        recording: result.recording,
+        sessionRecording: result.sessionRecording,
       });
     } catch (error) {
       next(error);
@@ -260,12 +498,56 @@ export function createSessionRouter(
 
   router.post("/:sessionId/livekit-recording/:egressId/stop", async (request, response, next) => {
     try {
-      await ensureSessionExists(prisma, request.params.sessionId);
+      const principal = requireAuthenticatedPrincipal(response);
+      const sessionId = requireParam(request.params.sessionId, "sessionId");
+      await ensureSessionExists(prisma, sessionId);
+      await requireActiveInterviewerRecordingAccess(prisma, principal, sessionId);
       const egressId = requireParam(request.params.egressId, "egressId");
-      const recording = await stopLiveKitRoomRecording(config, egressId, liveKitEgressClient);
+      const result = await stopSessionRecording(
+        prisma,
+        config,
+        { sessionId, egressId },
+        liveKitEgressClient,
+      );
+      const recording = result.recording;
+      let mediaAnalysisStatus = config.mediaAnalysisEnabled ? "not_published" : "disabled";
+
+      if (config.mediaAnalysisEnabled) {
+        if (recording.status !== LIVEKIT_EGRESS_COMPLETE) {
+          throw new HttpError(
+            409,
+            "MEDIA_ANALYSIS_RECORDING_NOT_READY",
+            "LiveKit recording is not ready for analysis",
+          );
+        }
+        try {
+          await publishRecordingMediaAnalysisJob(
+            prisma,
+            config,
+            mediaAnalysisPublisher,
+            { sessionId, egressId },
+          );
+          mediaAnalysisStatus = "queued";
+        } catch (error) {
+          if (error instanceof HttpError && error.code === "MEDIA_CONSENT_REQUIRED") {
+            mediaAnalysisStatus = "not_published_consent_required";
+          } else if (
+            error instanceof HttpError &&
+            error.code === "MEDIA_ANALYSIS_CANDIDATE_SOURCE_REQUIRED"
+          ) {
+            mediaAnalysisStatus = "not_published_candidate_source_required";
+          } else {
+            throw error;
+          }
+        }
+      }
 
       response.status(200).json({
         recording,
+        sessionRecording: result.sessionRecording,
+        mediaAnalysis: {
+          status: mediaAnalysisStatus,
+        },
       });
     } catch (error) {
       next(error);
@@ -274,13 +556,47 @@ export function createSessionRouter(
 
   router.post("/:sessionId/native-risk-report", async (request, response, next) => {
     try {
+      const principal = requireAuthenticatedPrincipal(response);
+      if (principal.role !== "candidate") {
+        throw new HttpError(403, "MONITORING_CANDIDATE_REQUIRED", "Candidate access is required");
+      }
       const body = parseNativeRiskReportBody(request.body);
       const session = await findSessionOrThrow(prisma, request.params.sessionId);
-      const participant = session.participants.find((candidate) => candidate.id === body.participantId && !candidate.leftAt);
+      const participant = session.participants.find(
+        (candidate) =>
+          candidate.id === body.participantId &&
+          candidate.userId === principal.subject &&
+          candidate.role === "CANDIDATE" &&
+          !candidate.leftAt,
+      );
 
       if (!participant) {
-        throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Participant not found");
+        throw new HttpError(403, "MONITORING_PARTICIPANT_FORBIDDEN", "Candidate cannot monitor this participant");
       }
+
+      const monitoringConsent = await prisma.monitoringConsent.findFirst({
+        where: {
+          id: body.monitoringConsentId,
+          sessionId: session.id,
+          participantId: participant.id,
+          monitoringStoppedAt: null,
+          revokedAt: null,
+        },
+        select: {
+          policyVersion: true,
+          policyDigestSha256: true,
+          nativeMonitoringPolicy: true,
+        },
+      });
+      if (!monitoringConsent) {
+        throw new HttpError(404, "MONITORING_NOT_ACTIVE", "Active monitoring enrollment not found");
+      }
+
+      const monitoringPolicy = requireBoundNativeMonitoringPolicy(monitoringConsent);
+      requireConfiguredProhibitedApplicationMatches(
+        body.nativeReport.prohibitedApplicationMatches ?? [],
+        monitoringPolicy.prohibitedApplicationRules,
+      );
 
       const signals = createNativeRiskSignals(body.nativeReport);
 
@@ -323,16 +639,70 @@ export function createSessionRouter(
         );
       }
 
-      const session = await prisma.session.update({
-        where: {
-          id: request.params.sessionId,
-        },
-        data: transitionUpdateData(requestedState),
-        include: sessionInclude,
-      });
+      let automaticRecording:
+        | Awaited<ReturnType<typeof startSessionRecording>>
+        | Awaited<ReturnType<typeof stopActiveSessionRecording>>
+        | undefined;
+      if (
+        config.livekitRecordingAutoLifecycleEnabled &&
+        (requestedState === "active" || ((requestedState === "ended" || requestedState === "cancelled") && currentState === "active"))
+      ) {
+        const principal = requireAuthenticatedPrincipal(response);
+        await requireActiveInterviewerRecordingAccess(prisma, principal, existingSession.id);
+
+        if (requestedState === "active") {
+          const mediaConsentSnapshots = await requireActiveRecordingConsents(prisma, config, existingSession.id);
+          automaticRecording = await startSessionRecording(
+            prisma,
+            config,
+            {
+              sessionId: existingSession.id,
+              mediaConsentSnapshots,
+            },
+            liveKitEgressClient,
+          );
+        } else {
+          automaticRecording = await stopActiveSessionRecording(
+            prisma,
+            config,
+            existingSession.id,
+            liveKitEgressClient,
+          );
+        }
+      }
+
+      let session;
+      try {
+        session = await prisma.session.update({
+          where: {
+            id: request.params.sessionId,
+          },
+          data: transitionUpdateData(requestedState),
+          include: sessionInclude,
+        });
+      } catch (error) {
+        if (automaticRecording && "sessionRecording" in automaticRecording && requestedState === "active") {
+          await stopSessionRecording(
+            prisma,
+            config,
+            {
+              sessionId: existingSession.id,
+              egressId: automaticRecording.sessionRecording.egressId,
+            },
+            liveKitEgressClient,
+          ).catch(() => undefined);
+        }
+        throw error;
+      }
 
       response.status(200).json({
         session: serializeSession(session),
+        ...(automaticRecording
+          ? {
+              recording: automaticRecording.recording,
+              sessionRecording: automaticRecording.sessionRecording,
+            }
+          : {}),
       });
     } catch (error) {
       next(error);
@@ -428,20 +798,55 @@ function parseLiveKitTokenBody(body: unknown): { participantId: string } {
   };
 }
 
+function parseMediaConsentBody(body: unknown): { scopes: MediaConsentScope[] } {
+  const record = requireRecord(body);
+
+  if (record.accepted !== true) {
+    throw new HttpError(400, "BAD_REQUEST", "accepted must be true to grant media consent");
+  }
+
+  try {
+    return {
+      scopes: createMediaConsentScopes(record.scopes),
+    };
+  } catch (error) {
+    throw new HttpError(
+      400,
+      "BAD_REQUEST",
+      error instanceof Error ? error.message : "media consent scopes are invalid",
+    );
+  }
+}
+
+function parseGazeCalibrationStepBody(body: unknown) {
+  try {
+    return createGazeCalibrationStep(body);
+  } catch (error) {
+    throw new HttpError(
+      400,
+      "BAD_REQUEST",
+      error instanceof Error ? error.message : "gaze calibration step is invalid",
+    );
+  }
+}
+
 function parseNativeRiskReportBody(body: unknown): {
   participantId: string;
+  monitoringConsentId: string;
   windowStartedAt: string;
   windowEndedAt: string;
   nativeReport: NativeRiskSignalReport;
 } {
   const record = requireRecord(body);
   const participantId = requireNonEmptyString(record, "participantId");
+  const monitoringConsentId = requireNonEmptyString(record, "monitoringConsentId");
   const windowStartedAt = requireIsoTimestamp(record, "windowStartedAt");
   const windowEndedAt = requireIsoTimestamp(record, "windowEndedAt");
   const nativeReport = parseNativeRiskSignalReport(record.nativeReport);
 
   return {
     participantId,
+    monitoringConsentId,
     windowStartedAt,
     windowEndedAt,
     nativeReport,
@@ -457,12 +862,20 @@ function parseRiskSummaryReviewBody(body: unknown): { reviewStatus: RiskSummaryR
 }
 
 function requireReviewerAccess(response: Response): AuthenticatedPrincipal {
-  const principal = (response.locals as SessionRouteLocals).authenticatedPrincipal;
+  const principal = requireAuthenticatedPrincipal(response);
 
-  if (!principal || !isPrivilegedUserRole(principal.role)) {
+  if (!isPrivilegedUserRole(principal.role)) {
     throw new HttpError(403, "FORBIDDEN", "Reviewer access is required");
   }
 
+  return principal;
+}
+
+function requireAuthenticatedPrincipal(response: Response): AuthenticatedPrincipal {
+  const principal = (response.locals as SessionRouteLocals).authenticatedPrincipal;
+  if (!principal) {
+    throw new HttpError(401, "UNAUTHENTICATED", "Invalid bearer token");
+  }
   return principal;
 }
 
@@ -500,8 +913,58 @@ function parseNativeRiskSignalReport(value: unknown): NativeRiskSignalReport {
   return {
     occurredAt: requireIsoTimestamp(record, "occurredAt"),
     captureAffinityReports: optionalArray(record.captureAffinityReports).map(parseCaptureAffinityReport),
+    environmentReports: optionalArray(record.environmentReports).map(parseEnvironmentReport),
     virtualizationReports: optionalArray(record.virtualizationReports).map(parseVirtualizationReport),
+    prohibitedApplicationMatches: optionalArray(record.prohibitedApplicationMatches).map(
+      parseProhibitedApplicationMatch,
+    ),
   };
+}
+
+function parseEnvironmentReport(value: unknown): NativeEnvironmentReport {
+  const record = requireRecord(value);
+  const monitorCount = requireMonitorCount(record.monitorCount, "monitorCount");
+  return {
+    platform: requireNonEmptyString(record, "platform"),
+    remoteSession: requireBoolean(record, "remoteSession"),
+    monitorCount,
+    ...(record.previousMonitorCount === undefined
+      ? {}
+      : { previousMonitorCount: requireMonitorCount(record.previousMonitorCount, "previousMonitorCount") }),
+  };
+}
+
+function requireMonitorCount(value: unknown, fieldName: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 32) {
+    throw new HttpError(400, "BAD_REQUEST", `${fieldName} must be an integer between 1 and 32`);
+  }
+  return value as number;
+}
+
+function parseProhibitedApplicationMatch(value: unknown): NativeProhibitedApplicationMatch {
+  try {
+    return createNativeProhibitedApplicationMatch(value);
+  } catch (error) {
+    throw new HttpError(
+      400,
+      "BAD_REQUEST",
+      error instanceof Error ? error.message : "Prohibited application match is invalid",
+    );
+  }
+}
+
+function requireConfiguredProhibitedApplicationMatches(
+  matches: readonly NativeProhibitedApplicationMatch[],
+  configuredRules: ServerConfig["monitoringProhibitedApplicationRules"],
+): void {
+  const configuredRuleIds = new Set(configuredRules.map((rule) => rule.id));
+  if (matches.some((match) => !configuredRuleIds.has(match.ruleId))) {
+    throw new HttpError(
+      400,
+      "MONITORING_RULE_NOT_CONFIGURED",
+      "Prohibited application report references an unconfigured rule",
+    );
+  }
 }
 
 function parseCaptureAffinityReport(value: unknown): NativeCaptureAffinityReport {
@@ -644,48 +1107,6 @@ function transitionUpdateData(state: SessionState) {
     ...(state === "active" ? { startedAt: now } : {}),
     ...(state === "ended" || state === "cancelled" ? { endedAt: now } : {}),
   };
-}
-
-async function createRecordingEvidenceObject(
-  prisma: PrismaClient,
-  config: ServerConfig,
-  request: {
-    sessionId: string;
-    recording: {
-      egressId: string;
-      roomName: string;
-      status: number;
-      filepath?: string;
-    };
-  },
-) {
-  const storageBucket = requireConfiguredRecordingValue(config.livekitRecordingS3Bucket, "S3_BUCKET");
-  const storageKey = requireConfiguredRecordingValue(request.recording.filepath, "recording filepath");
-
-  return prisma.evidenceObject.create({
-    data: {
-      sessionId: request.sessionId,
-      kind: "SESSION_RECORDING",
-      storageBucket,
-      storageKey,
-      contentType: "video/mp4",
-      metadata: {
-        livekit: {
-          egressId: request.recording.egressId,
-          roomName: request.recording.roomName,
-          status: request.recording.status,
-        },
-      } satisfies Prisma.InputJsonValue,
-    },
-  });
-}
-
-function requireConfiguredRecordingValue(value: string | null | undefined, fieldName: string): string {
-  if (!value || value.trim().length === 0) {
-    throw new HttpError(503, "LIVEKIT_RECORDING_NOT_CONFIGURED", `${fieldName} is required for LiveKit recording`);
-  }
-
-  return value.trim();
 }
 
 function serializeSession(session: SessionWithParticipants) {

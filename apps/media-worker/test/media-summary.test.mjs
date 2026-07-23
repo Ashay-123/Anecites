@@ -28,14 +28,23 @@ test("processMediaAnalysisJob persists media-derived pending-review risk summari
         },
       },
     });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          contains: testRunId,
+        },
+      },
+    });
     await prisma.$disconnect();
   });
 
-  const { session, evidence } = await createRecordingEvidence(prisma, "signals");
+  const { session, evidence, candidateParticipant } = await createRecordingEvidence(prisma, "signals");
   const result = await processMediaAnalysisJob({
     prisma,
     job: createMediaAnalysisJob({
+      jobId: `${testRunId}-persisted-summary`,
       sessionId: session.id,
+      participantId: candidateParticipant.id,
       recordingEvidenceObjectId: evidence.id,
       requestedModes: [MEDIA_ANALYSIS_MODES.audioSecondVoice],
       options: validOptions(),
@@ -64,9 +73,11 @@ test("processMediaAnalysisJob persists media-derived pending-review risk summari
   assert.equal(result.riskSignals.length, 1);
   assert.equal(result.riskSignals[0].type, RISK_SIGNAL_TYPES.mediaSecondVoice);
   assert.equal(result.riskSummary.evidenceObjectId, evidence.id);
+  assert.equal(result.riskSummary.participantId, candidateParticipant.id);
   assert.equal(result.riskSummary.reviewStatus, "pending_review");
   assert.equal(result.riskSummary.humanReviewRequired, true);
   assert.equal(result.riskSummary.correlatedSignalCount, 1);
+  assert.equal(result.riskSummary.meetsCorrelationPolicy, false);
   assert.deepEqual(result.riskSummary.signalBreakdown, [
     {
       category: "media",
@@ -75,8 +86,11 @@ test("processMediaAnalysisJob persists media-derived pending-review risk summari
       types: [RISK_SIGNAL_TYPES.mediaSecondVoice],
     },
   ]);
-  assert.equal(result.riskSummary.windowStartedAt, "2026-07-11T00:00:01.000Z");
-  assert.equal(result.riskSummary.windowEndedAt, "2026-07-11T00:00:05.200Z");
+  assert.equal(result.riskSummary.windowStartedAt, "2026-07-11T00:00:00.000Z");
+  assert.equal(result.riskSummary.windowEndedAt, "2026-07-11T00:01:00.000Z");
+  assert.deepEqual(result.riskSummary.evidenceReferences.map((reference) => reference.kind), [
+    "risk_event",
+  ]);
 
   const persistedSummary = await prisma.riskSummary.findUniqueOrThrow({
     where: {
@@ -86,6 +100,15 @@ test("processMediaAnalysisJob persists media-derived pending-review risk summari
   assert.equal(persistedSummary.evidenceObjectId, evidence.id);
   assert.equal(persistedSummary.reviewStatus, "PENDING_REVIEW");
   assert.equal(persistedSummary.humanReviewRequired, true);
+  const persistedRiskEvents = await prisma.riskEvent.findMany({
+    where: {
+      sessionId: session.id,
+      source: "MEDIA_WORKER",
+    },
+  });
+  assert.equal(persistedRiskEvents.length, 1);
+  assert.equal(persistedRiskEvents[0].type, RISK_SIGNAL_TYPES.mediaSecondVoice);
+  assert.equal(persistedRiskEvents[0].evidenceObjectId, evidence.id);
   assert.equal(JSON.stringify(persistedSummary).includes("transcript"), false);
   assert.equal(JSON.stringify(persistedSummary).includes("rawFrame"), false);
 });
@@ -106,14 +129,23 @@ test("processMediaAnalysisJob does not persist empty risk summaries for clean me
         },
       },
     });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          contains: testRunId,
+        },
+      },
+    });
     await prisma.$disconnect();
   });
 
-  const { session, evidence } = await createRecordingEvidence(prisma, "clean");
+  const { session, evidence, candidateParticipant } = await createRecordingEvidence(prisma, "clean");
   const result = await processMediaAnalysisJob({
     prisma,
     job: createMediaAnalysisJob({
+      jobId: `${testRunId}-clean-summary`,
       sessionId: session.id,
+      participantId: candidateParticipant.id,
       recordingEvidenceObjectId: evidence.id,
       requestedModes: [MEDIA_ANALYSIS_MODES.audioSecondVoice],
       options: validOptions(),
@@ -155,14 +187,23 @@ test("processMediaAnalysisJob preserves evidence links without persisting raw me
         },
       },
     });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          contains: testRunId,
+        },
+      },
+    });
     await prisma.$disconnect();
   });
 
-  const { session, evidence } = await createRecordingEvidence(prisma, "bounded");
+  const { session, evidence, candidateParticipant } = await createRecordingEvidence(prisma, "bounded");
   const result = await processMediaAnalysisJob({
     prisma,
     job: createMediaAnalysisJob({
+      jobId: `${testRunId}-window-summary`,
       sessionId: session.id,
+      participantId: candidateParticipant.id,
       recordingEvidenceObjectId: evidence.id,
       requestedModes: [MEDIA_ANALYSIS_MODES.videoFacePresence],
       options: validOptions(),
@@ -205,6 +246,21 @@ async function createRecordingEvidence(prisma, suffix) {
       title: `${testRunId}-${suffix} interview`,
     },
   });
+  const candidate = await prisma.user.create({
+    data: {
+      email: `candidate.${suffix}.${testRunId}@example.test`,
+      displayName: "Media Summary Candidate",
+      role: "CANDIDATE",
+    },
+  });
+  const candidateParticipant = await prisma.participant.create({
+    data: {
+      sessionId: session.id,
+      userId: candidate.id,
+      role: "CANDIDATE",
+      joinedAt: new Date(),
+    },
+  });
   const evidence = await prisma.evidenceObject.create({
     data: {
       sessionId: session.id,
@@ -213,10 +269,16 @@ async function createRecordingEvidence(prisma, suffix) {
       storageKey: `recordings/${testRunId}-${suffix}.mp4`,
       contentType: "video/mp4",
       durationMs: 60000,
+      metadata: {
+        livekit: {
+          recordingScope: "candidate_track",
+          participantId: candidateParticipant.id,
+        },
+      },
     },
   });
 
-  return { session, evidence };
+  return { session, evidence, candidateParticipant };
 }
 
 function validOptions() {

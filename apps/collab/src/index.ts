@@ -28,12 +28,14 @@ export {
   createPrismaTelemetryAggregateSink,
   createRedisRawTelemetrySink,
   type CollabTelemetryOptions,
+  type EditorRawTelemetryEvent,
   type TelemetryAggregateSink,
   type TelemetryRawEventSink,
 } from "./telemetry.js";
 export {
   createCollabServer,
   type AuthenticatedPrincipal,
+  type AuthorizedRoomContext,
   type AuthorizeRoom,
   type CollabServer,
 } from "./server.js";

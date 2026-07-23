@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createSecondVoiceAudioAdapter } from "../dist/index.js";
+import {
+  createSecondVoiceAudioAdapter,
+  createShadowSecondVoiceAudioAdapter,
+} from "../dist/index.js";
 
 const baseRequest = {
   sessionId: "session-1",
@@ -161,4 +164,35 @@ test("second-voice audio adapter validates bounded options and segment fixtures"
     () => adapter.analyzeSecondVoice(baseRequest),
     /confidence must be between 0 and 1/,
   );
+});
+
+test("shadow second-voice adapter uses anonymous diarization segments without calibrated confidence", async () => {
+  const adapter = createShadowSecondVoiceAudioAdapter({
+    adapterVersion: "test-pyannote-shadow-v1",
+    minimumSecondVoiceDurationMs: 2000,
+    analyzeSpeakerSegments: async () => [
+      {
+        speakerId: "SPEAKER_00",
+        startedAtMs: 0,
+        endedAtMs: 3000,
+      },
+      {
+        speakerId: "SPEAKER_01",
+        startedAtMs: 4500,
+        endedAtMs: 7200,
+      },
+    ],
+  });
+
+  const observations = await adapter.analyzeSecondVoice(baseRequest);
+  assert.deepEqual(observations, [{
+    kind: "second_voice",
+    confidence: 0,
+    durationMs: 2700,
+    sampleStartedAt: "1970-01-01T00:00:04.500Z",
+    sampleEndedAt: "1970-01-01T00:00:07.200Z",
+    adapterVersion: "test-pyannote-shadow-v1",
+    speakerCount: 2,
+  }]);
+  assert.equal(JSON.stringify(observations).includes("SPEAKER_01"), false);
 });

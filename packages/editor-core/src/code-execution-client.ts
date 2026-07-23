@@ -45,6 +45,8 @@ export interface CodeExecutionSubmissionRecord {
   languageId: number;
   executionMode: "run" | "submit";
   status: string;
+  stdout: string | null;
+  stderr: string | null;
   timeMs: number | null;
   memoryKb: number | null;
   createdAt: string;
@@ -89,7 +91,7 @@ export function createCodeExecutionClient(
 
   return {
     async listSubmissions(request) {
-      const url = new URL("/code-executions", baseUrl);
+      const url = createEndpointUrl(baseUrl, "code-executions");
       url.searchParams.set("sessionId", requireNonEmptyString("sessionId", request.sessionId));
 
       if (request.documentId !== undefined) {
@@ -111,7 +113,7 @@ export function createCodeExecutionClient(
         },
       });
 
-      const body: unknown = await response.json();
+      const body = await readJsonResponse(response);
 
       if (!response.ok) {
         throw toClientError(response.status, body);
@@ -121,7 +123,7 @@ export function createCodeExecutionClient(
     },
 
     async execute(submission) {
-      const response = await fetchImpl(new URL("/code-executions", baseUrl), {
+      const response = await fetchImpl(createEndpointUrl(baseUrl, "code-executions"), {
         method: "POST",
         headers: {
           Accept: "application/json",
@@ -131,7 +133,7 @@ export function createCodeExecutionClient(
         body: JSON.stringify(normalizeSubmission(submission)),
       });
 
-      const body: unknown = await response.json();
+      const body = await readJsonResponse(response);
 
       if (!response.ok) {
         throw toClientError(response.status, body);
@@ -140,6 +142,11 @@ export function createCodeExecutionClient(
       return parseCodeExecutionResponse(body);
     },
   };
+}
+
+function createEndpointUrl(baseUrl: string, path: string): URL {
+  const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+  return new URL(path, normalizedBaseUrl);
 }
 
 function normalizeSubmission(submission: CodeExecutionSubmission): CodeExecutionSubmission & { stdin: string } {
@@ -183,9 +190,33 @@ function toClientError(status: number, body: unknown): CodeExecutionClientError 
 
   return new CodeExecutionClientError(
     status,
-    "CODE_EXECUTION_PROXY_ERROR",
-    "Code execution proxy request failed",
+    status >= 500 ? "CODE_EXECUTION_UPSTREAM_ERROR" : "CODE_EXECUTION_PROXY_ERROR",
+    status >= 500
+      ? "Code execution service is temporarily unavailable"
+      : "Code execution proxy request failed",
   );
+}
+
+async function readJsonResponse(response: Response): Promise<unknown> {
+  const text = await response.text();
+
+  if (text.trim().length === 0) {
+    if (!response.ok) {
+      throw toClientError(response.status, null);
+    }
+
+    throw new Error("Code execution proxy returned an invalid response");
+  }
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    if (!response.ok) {
+      throw toClientError(response.status, null);
+    }
+
+    throw new Error("Code execution proxy returned an invalid response");
+  }
 }
 
 function parseCodeExecutionResponse(body: unknown): CodeExecutionResult {
@@ -250,6 +281,8 @@ function isCodeExecutionSubmissionRecord(value: unknown): value is CodeExecution
     typeof value.languageId === "number" &&
     (value.executionMode === "run" || value.executionMode === "submit") &&
     typeof value.status === "string" &&
+    isNullableString(value.stdout) &&
+    isNullableString(value.stderr) &&
     isNullableNumber(value.timeMs) &&
     isNullableNumber(value.memoryKb) &&
     typeof value.createdAt === "string"

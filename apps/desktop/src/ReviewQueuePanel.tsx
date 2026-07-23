@@ -4,6 +4,7 @@ import {
   type ReviewerRiskSummary,
   type RiskSummaryReviewStatus,
 } from "./review.js";
+import { type ReviewerEvidencePlayback } from "./evidence-playback.js";
 import { type ReviewQueueStatus } from "./meeting-types.js";
 
 export interface ReviewQueuePanelProps {
@@ -12,6 +13,8 @@ export interface ReviewQueuePanelProps {
   riskSummaries: readonly ReviewerRiskSummary[];
   onRefresh: () => void;
   onApplyReviewStatus: (riskSummaryId: string, reviewStatus: RiskSummaryReviewStatus) => void;
+  onPlayEvidence: (riskSummary: ReviewerRiskSummary) => void;
+  evidencePlayback: ReviewerEvidencePlayback | null;
 }
 
 export function ReviewQueuePanel({
@@ -20,6 +23,8 @@ export function ReviewQueuePanel({
   riskSummaries,
   onRefresh,
   onApplyReviewStatus,
+  onPlayEvidence,
+  evidencePlayback,
 }: ReviewQueuePanelProps): ReactElement {
   return (
     <section className="review-pane" id="review-queue" aria-label="Reviewer queue">
@@ -32,6 +37,23 @@ export function ReviewQueuePanel({
           Refresh reviews
         </button>
       </div>
+      {evidencePlayback ? (
+        <section className="review-evidence-player" aria-label="Recording evidence">
+          <video
+            key={evidencePlayback.url}
+            controls
+            src={evidencePlayback.url}
+            onLoadedMetadata={(event) => {
+              if (evidencePlayback.startTime !== null) {
+                event.currentTarget.currentTime = Math.min(evidencePlayback.startTime, event.currentTarget.duration || evidencePlayback.startTime);
+              }
+            }}
+          />
+          <p>
+            {evidencePlayback.startTime === null ? "Recording playback" : `Evidence range starts at ${evidencePlayback.startTime.toFixed(1)}s`}
+          </p>
+        </section>
+      ) : null}
       <div className="review-list">
         {riskSummaries.length === 0 ? (
           <p className="review-empty">No risk summaries loaded</p>
@@ -43,10 +65,25 @@ export function ReviewQueuePanel({
                 <span>{summary.reviewStatus}</span>
               </div>
               <p>{summary.rationale ?? "Review required"}</p>
+              <p className="review-correlation-status">
+                {summary.meetsCorrelationPolicy ? "Correlated evidence" : "Single signal family"}
+              </p>
+              <ul className="review-signal-list" aria-label="Signal families">
+                {summary.signalBreakdown.map((signal) => (
+                  <li key={signal.category}>
+                    <span>{signal.category}</span>
+                    <span>{signal.count}</span>
+                  </li>
+                ))}
+              </ul>
               <dl>
                 <div>
                   <dt>Signals</dt>
                   <dd>{summary.correlatedSignalCount}</dd>
+                </div>
+                <div>
+                  <dt>Evidence</dt>
+                  <dd>{summary.evidenceReferences.length}</dd>
                 </div>
                 <div>
                   <dt>Window</dt>
@@ -54,6 +91,11 @@ export function ReviewQueuePanel({
                 </div>
               </dl>
               <div className="review-item-actions">
+                {summary.evidenceObjectId ? (
+                  <button type="button" onClick={() => onPlayEvidence(summary)} disabled={status === "updating"}>
+                    Play evidence
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => onApplyReviewStatus(summary.id, "confirmed")}

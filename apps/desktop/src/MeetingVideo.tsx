@@ -60,6 +60,7 @@ export interface MeetingVideoRoomProps {
   hiddenAudioTiles: ReactNode;
   peerLabel: string;
   controls: ReactNode;
+  compact?: boolean;
 }
 
 export function MeetingVideoRoom({
@@ -68,10 +69,14 @@ export function MeetingVideoRoom({
   hiddenAudioTiles,
   peerLabel,
   controls,
+  compact = false,
 }: MeetingVideoRoomProps): ReactElement {
   return (
-    <section className="candidate-video-room" aria-label="Interview video call">
-      <div className="candidate-video-stage">
+    <section
+      className={compact ? "candidate-video-room candidate-video-room--compact" : "candidate-video-room"}
+      aria-label="Interview video call"
+    >
+      <div className={compact ? "candidate-video-stage candidate-video-stage--compact" : "candidate-video-stage"}>
         <MeetingVideoCard tile={remoteVideoTiles[0]} label={peerLabel} priority="primary" />
         <MeetingVideoCard tile={localVideoTiles[0]} label="You" priority="secondary" />
         {remoteVideoTiles.slice(1).map((tile) => (

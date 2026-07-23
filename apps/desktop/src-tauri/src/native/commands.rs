@@ -1,6 +1,8 @@
 use super::capture_affinity::{self, CaptureAffinityReport};
+use super::environment::{self, EnvironmentReport};
 use super::platform;
 use super::process_scanner::{self, ProcessScanReport};
+use super::prohibited_applications::{self, ProhibitedApplicationMatch, ProhibitedApplicationRule};
 use super::types::{NativeCapability, NativeCommandError};
 use super::virtualization::{self, VirtualizationReport};
 use super::window_monitor::{self, WindowScanReport};
@@ -19,6 +21,8 @@ pub fn get_native_capabilities() -> Vec<NativeCapability> {
         "window_monitor",
         "capture_affinity",
         "virtualization_detection",
+        "prohibited_application_detection",
+        "environment_detection",
     ]
     .into_iter()
     .map(|name| NativeCapability {
@@ -49,4 +53,18 @@ pub fn check_capture_affinity(
 #[tauri::command]
 pub fn detect_virtualization() -> Result<VirtualizationReport, NativeCommandError> {
     virtualization::detect_virtualization()
+}
+
+#[tauri::command]
+pub fn detect_environment() -> Result<EnvironmentReport, NativeCommandError> {
+    environment::detect_environment()
+}
+
+#[tauri::command]
+pub fn detect_prohibited_applications(
+    rules: Vec<ProhibitedApplicationRule>,
+    process_limit: u16,
+    window_limit: u16,
+) -> Result<Vec<ProhibitedApplicationMatch>, NativeCommandError> {
+    prohibited_applications::detect_prohibited_applications(rules, process_limit, window_limit)
 }

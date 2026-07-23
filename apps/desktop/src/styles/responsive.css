@@ -120,6 +120,17 @@
     border-bottom: 1px solid var(--border);
   }
 
+  .candidate-editor-header {
+    flex-wrap: wrap;
+    padding-top: 7px;
+  }
+
+  .candidate-editor-tabs {
+    order: 4;
+    width: 100%;
+    max-width: 100%;
+  }
+
   .candidate-video-rail {
     min-height: 340px;
   }

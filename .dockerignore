@@ -1,0 +1,13 @@
+.git
+.codex-local
+node_modules
+**/node_modules
+**/dist
+**/dist-web
+**/target
+**/__pycache__
+*.log
+.env
+.env.*
+!.env.example
+!docker/.env.example

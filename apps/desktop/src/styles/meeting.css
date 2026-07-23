@@ -284,6 +284,58 @@
   font-size: 0.8125rem;
 }
 
+.candidate-editor-tabs {
+  display: flex;
+  min-width: 0;
+  max-width: min(46vw, 520px);
+  align-self: stretch;
+  align-items: end;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.candidate-editor-tabs button {
+  flex: 0 0 auto;
+  min-width: 94px;
+  height: 34px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.candidate-editor-tabs button[aria-selected="true"] {
+  border-color: var(--border);
+  background: var(--surface-sunken);
+  color: var(--foreground);
+}
+
+.candidate-editor-tabs button:hover:not(:disabled) {
+  background: var(--secondary-hover);
+  color: var(--foreground);
+}
+
+.candidate-editor-tabs .candidate-editor-add-tab {
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  font-size: 1.125rem;
+  line-height: 1;
+}
+
+.candidate-editor-tabs button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .candidate-editor-assist {
   display: flex;
   min-width: 0;
@@ -480,6 +532,40 @@
   min-height: 36px;
 }
 
+.candidate-video-room--compact {
+  min-height: 0;
+  padding: 14px;
+  gap: 12px;
+  background: var(--background);
+}
+
+.candidate-video-room--compact .candidate-video-stage {
+  grid-template-columns: 1fr;
+  align-content: start;
+  gap: 10px;
+  overflow: auto;
+}
+
+.candidate-video-room--compact .meeting-video-card,
+.candidate-video-room--compact .meeting-video-card[data-priority="primary"],
+.candidate-video-room--compact .meeting-video-card[data-priority="secondary"] {
+  min-height: 146px;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.candidate-video-room--compact .meeting-call-controls {
+  width: 100%;
+  flex-wrap: wrap;
+  justify-self: stretch;
+  border-radius: var(--radius-sm);
+}
+
+.candidate-video-room--compact .meeting-call-controls button {
+  flex: 1 1 50%;
+  min-height: 36px;
+}
+
 .meeting-native-panel {
   border-top: 1px solid var(--border);
   background: var(--background);
@@ -510,5 +596,50 @@
   gap: 4px;
   padding: 10px 16px;
   background: var(--card);
+}
+
+.gaze-calibration-stage {
+  position: relative;
+  min-height: 220px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+
+.gaze-calibration-target {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border: 4px solid var(--card);
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+  transform: translate(-50%, -50%);
+}
+
+.gaze-calibration-stage[data-target="center"] .gaze-calibration-target {
+  top: 50%;
+  left: 50%;
+}
+
+.gaze-calibration-stage[data-target="upper_left"] .gaze-calibration-target {
+  top: 18%;
+  left: 18%;
+}
+
+.gaze-calibration-stage[data-target="upper_right"] .gaze-calibration-target {
+  top: 18%;
+  left: 82%;
+}
+
+.gaze-calibration-stage[data-target="lower_left"] .gaze-calibration-target {
+  top: 82%;
+  left: 18%;
+}
+
+.gaze-calibration-stage[data-target="lower_right"] .gaze-calibration-target {
+  top: 82%;
+  left: 82%;
 }
 

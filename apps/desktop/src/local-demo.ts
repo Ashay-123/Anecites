@@ -24,6 +24,13 @@ export interface LocalDemoBootstrap {
 
 export interface LocalDemoWorkspaceState {
   codeEditorOpen: boolean;
+  activeDocumentId: string;
+  documents: LocalDemoEditorDocument[];
+}
+
+export interface LocalDemoEditorDocument {
+  id: string;
+  label: string;
 }
 
 export interface JoinLocalDemoMeetingRequest {
@@ -38,6 +45,10 @@ export interface LocalDemoWorkspaceStateRequest {
 
 export interface UpdateLocalDemoWorkspaceStateRequest extends LocalDemoWorkspaceStateRequest {
   codeEditorOpen: boolean;
+}
+
+export interface SelectLocalDemoEditorDocumentRequest extends LocalDemoWorkspaceStateRequest {
+  documentId: string;
 }
 
 export interface LocalDemoServiceUrls {
@@ -206,6 +217,58 @@ export async function updateLocalDemoWorkspaceState(
   return parseWorkspaceState(body);
 }
 
+export async function createLocalDemoEditorDocument(
+  request: LocalDemoWorkspaceStateRequest,
+  fetchImpl: FetchLike = fetch,
+): Promise<LocalDemoWorkspaceState> {
+  return requestWorkspaceDocumentMutation(
+    "/local-demo/meetings/documents",
+    "POST",
+    request,
+    {},
+    fetchImpl,
+  );
+}
+
+export async function selectLocalDemoEditorDocument(
+  request: SelectLocalDemoEditorDocumentRequest,
+  fetchImpl: FetchLike = fetch,
+): Promise<LocalDemoWorkspaceState> {
+  return requestWorkspaceDocumentMutation(
+    "/local-demo/meetings/documents/active",
+    "PATCH",
+    request,
+    { documentId: requireNonEmptyString(request.documentId) },
+    fetchImpl,
+  );
+}
+
+async function requestWorkspaceDocumentMutation(
+  path: string,
+  method: "POST" | "PATCH",
+  request: LocalDemoWorkspaceStateRequest,
+  extraBody: Record<string, unknown>,
+  fetchImpl: FetchLike,
+): Promise<LocalDemoWorkspaceState> {
+  const sessionId = requireNonEmptyString(request.sessionId);
+  const authToken = requireNonEmptyString(request.authToken);
+  const { apiBaseUrl } = resolveLocalDemoServiceUrls();
+  const body = await requestJson(
+    `${apiBaseUrl}${path}`,
+    {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({ sessionId, ...extraBody }),
+      signal: AbortSignal.timeout(LOCAL_DEMO_REQUEST_TIMEOUT_MS),
+    },
+    fetchImpl,
+  );
+  return parseWorkspaceState(body);
+}
+
 async function requestJson(url: string, init: RequestInit, fetchImpl: FetchLike): Promise<unknown> {
   let response: Response;
   try {
@@ -298,12 +361,34 @@ function parseWorkspaceState(value: unknown): LocalDemoWorkspaceState {
   const record = requireRecord(value);
   const state = requireRecord(record.state);
 
-  if (typeof state.codeEditorOpen !== "boolean") {
+  if (
+    typeof state.codeEditorOpen !== "boolean" ||
+    typeof state.activeDocumentId !== "string" ||
+    !Array.isArray(state.documents) ||
+    state.documents.length === 0 ||
+    state.documents.length > 10
+  ) {
+    throw new Error("Local demo response is invalid");
+  }
+
+  const documents = state.documents.map((value) => {
+    const document = requireRecord(value);
+    return {
+      id: requireString(document.id),
+      label: requireString(document.label),
+    };
+  });
+  if (
+    new Set(documents.map((document) => document.id)).size !== documents.length ||
+    !documents.some((document) => document.id === state.activeDocumentId)
+  ) {
     throw new Error("Local demo response is invalid");
   }
 
   return {
     codeEditorOpen: state.codeEditorOpen,
+    activeDocumentId: state.activeDocumentId,
+    documents,
   };
 }
 

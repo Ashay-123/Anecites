@@ -38,14 +38,14 @@ test("video analysis adapter maps no-face and multi-face fixtures to bounded obs
     analyzeVideoWindows: async () => [
       {
         faceCount: 0,
-        faceConfidence: 0.9,
+        conditionSupport: 0.9,
         startedAtMs: 1000,
         endedAtMs: 4500,
         rawFrame: "must-not-be-copied",
       },
       {
         faceCount: 2,
-        faceConfidence: 0.88,
+        conditionSupport: 0.88,
         startedAtMs: 6000,
         endedAtMs: 7600,
         landmarks: [1, 2, 3],
@@ -87,7 +87,7 @@ test("video analysis adapter requires calibration before gaze observations are e
     analyzeVideoWindows: async () => [
       {
         faceCount: 1,
-        faceConfidence: 0.96,
+        conditionSupport: 0.96,
         gazeOffscreenConfidence: 0.97,
         startedAtMs: 5000,
         endedAtMs: 8400,
@@ -104,7 +104,7 @@ test("video analysis adapter requires calibration before gaze observations are e
     analyzeVideoWindows: async () => [
       {
         faceCount: 1,
-        faceConfidence: 0.96,
+        conditionSupport: 0.96,
         gazeOffscreenConfidence: 0.91,
         startedAtMs: 5000,
         endedAtMs: 7900,
@@ -131,7 +131,7 @@ test("uncalibrated gaze fixture cannot produce high-confidence risk signals", as
     analyzeVideoWindows: async () => [
       {
         faceCount: 1,
-        faceConfidence: 0.96,
+        conditionSupport: 0.96,
         gazeOffscreenConfidence: 0.99,
         startedAtMs: 5000,
         endedAtMs: 9000,
@@ -139,7 +139,9 @@ test("uncalibrated gaze fixture cannot produce high-confidence risk signals", as
     ],
   });
   const job = createMediaAnalysisJob({
+    jobId: "video-analysis-gaze",
     sessionId: "session-1",
+    participantId: "candidate-participant-1",
     recordingEvidenceObjectId: "recording-evidence-1",
     requestedModes: [MEDIA_ANALYSIS_MODES.videoGazeOffscreen],
     options: {
@@ -160,7 +162,18 @@ test("uncalibrated gaze fixture cannot produce high-confidence risk signals", as
           storageKey: "recordings/session-1.mp4",
           contentType: "video/mp4",
           durationMs: 60000,
+          metadata: {
+            livekit: {
+              recordingScope: "candidate_track",
+              participantId: "candidate-participant-1",
+            },
+          },
         };
+      },
+    },
+    participant: {
+      async findFirst() {
+        return { id: "candidate-participant-1" };
       },
     },
   };
@@ -197,7 +210,7 @@ test("video analysis adapter validates bounded options and fixture windows", asy
     analyzeVideoWindows: async () => [
       {
         faceCount: -1,
-        faceConfidence: 0.9,
+        conditionSupport: 0.9,
         startedAtMs: 0,
         endedAtMs: 3000,
       },

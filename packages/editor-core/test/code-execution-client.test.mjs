@@ -65,6 +65,30 @@ test("code execution client defaults stdin to an empty string", async () => {
   });
 });
 
+test("code execution client preserves a same-origin API path prefix", async () => {
+  const fakeFetch = createFakeFetch({
+    status: 201,
+    body: {
+      execution: acceptedExecution(),
+    },
+  });
+  const client = createCodeExecutionClient({
+    baseUrl: "https://demo.trycloudflare.com/api",
+    token: "jwt-token",
+    fetch: fakeFetch.fetchImpl,
+  });
+
+  await client.execute({
+    languageId: 63,
+    sourceCode: "console.log('ok')",
+  });
+
+  assert.equal(
+    fakeFetch.calls[0].url,
+    "https://demo.trycloudflare.com/api/code-executions",
+  );
+});
+
 test("code execution client includes optional persistence context", async () => {
   const fakeFetch = createFakeFetch({
     status: 201,
@@ -137,6 +161,8 @@ test("code execution client lists persisted submissions", async () => {
           languageId: 63,
           executionMode: "submit",
           status: "Wrong Answer",
+          stdout: "candidate output\n",
+          stderr: "candidate error\n",
           timeMs: 12,
           memoryKb: 1024,
           createdAt: "2026-07-13T00:00:00.000Z",
@@ -190,6 +216,29 @@ test("code execution client maps proxy errors to typed errors", async () => {
       assert.equal(error.status, 504);
       assert.equal(error.code, "CODE_EXECUTION_TIMEOUT");
       assert.equal(error.message, "Code execution timed out");
+      return true;
+    },
+  );
+});
+
+test("code execution client maps empty upstream responses to a controlled error", async () => {
+  const client = createCodeExecutionClient({
+    baseUrl: "http://api.test",
+    token: "jwt-token",
+    fetch: async () => new Response(null, { status: 502 }),
+  });
+
+  await assert.rejects(
+    () =>
+      client.execute({
+        languageId: 63,
+        sourceCode: "console.log('ok')",
+      }),
+    (error) => {
+      assert(error instanceof CodeExecutionClientError);
+      assert.equal(error.status, 502);
+      assert.equal(error.code, "CODE_EXECUTION_UPSTREAM_ERROR");
+      assert.equal(error.message, "Code execution service is temporarily unavailable");
       return true;
     },
   );

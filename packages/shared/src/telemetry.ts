@@ -55,6 +55,7 @@ export interface PasteBlockedTelemetryEvent extends PasteBlockedTelemetryInput {
 
 export interface RollingEditorTelemetryAggregateInput {
   sessionId: string;
+  participantId: string;
   documentId: string;
   windowStartedAt: IsoDateTimeString;
   windowEndedAt: IsoDateTimeString;
@@ -113,6 +114,7 @@ export function createRollingEditorTelemetryAggregate(
   input: RollingEditorTelemetryAggregateInput,
 ): RollingEditorTelemetryAggregate {
   assertNonEmptyString("sessionId", input.sessionId);
+  assertNonEmptyString("participantId", input.participantId);
   assertNonEmptyString("documentId", input.documentId);
   assertNonEmptyString("windowStartedAt", input.windowStartedAt);
   assertNonEmptyString("windowEndedAt", input.windowEndedAt);

@@ -8,6 +8,8 @@ pub fn run() {
             native::commands::scan_windows,
             native::commands::check_capture_affinity,
             native::commands::detect_virtualization,
+            native::commands::detect_environment,
+            native::commands::detect_prohibited_applications,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Anecites desktop");

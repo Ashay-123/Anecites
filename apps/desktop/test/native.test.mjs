@@ -17,6 +17,13 @@ test("collectNativeMonitoringSnapshot gathers timestamped native risk reports", 
     {
       processLimit: 25,
       windowLimit: 2,
+      prohibitedApplicationRules: [
+        {
+          id: "interview.assistant",
+          processNames: ["assistant.exe"],
+          windowTitleContains: ["interview helper"],
+        },
+      ],
     },
     async (command, args) => {
       calls.push({ command, args });
@@ -40,6 +47,16 @@ test("collectNativeMonitoringSnapshot gathers timestamped native risk reports", 
           },
           {
             name: "virtualization_detection",
+            available: true,
+            reason: null,
+          },
+          {
+            name: "prohibited_application_detection",
+            available: true,
+            reason: null,
+          },
+          {
+            name: "environment_detection",
             available: true,
             reason: null,
           },
@@ -103,6 +120,34 @@ test("collectNativeMonitoringSnapshot gathers timestamped native risk reports", 
         };
       }
 
+      if (command === "detect_environment") {
+        return {
+          platform: "windows",
+          remoteSession: false,
+          monitorCount: 2,
+        };
+      }
+
+      if (command === "detect_prohibited_applications") {
+        assert.deepEqual(args, {
+          rules: [
+            {
+              id: "interview.assistant",
+              processNames: ["assistant.exe"],
+              windowTitleContains: ["interview helper"],
+            },
+          ],
+          processLimit: 25,
+          windowLimit: 2,
+        });
+        return [
+          {
+            ruleId: "interview.assistant",
+            matchKinds: ["process_name", "window_title"],
+          },
+        ];
+      }
+
       throw new Error(`unexpected command ${command}`);
     },
     () => new Date("2026-07-11T01:02:03.000Z"),
@@ -117,6 +162,8 @@ test("collectNativeMonitoringSnapshot gathers timestamped native risk reports", 
       "check_capture_affinity",
       "check_capture_affinity",
       "detect_virtualization",
+      "detect_environment",
+      "detect_prohibited_applications",
     ],
   );
   assert.equal(snapshot.occurredAt, "2026-07-11T01:02:03.000Z");
@@ -146,6 +193,19 @@ test("collectNativeMonitoringSnapshot gathers timestamped native risk reports", 
             detail: "vendor=Microsoft Hv",
           },
         ],
+      },
+    ],
+    environmentReports: [
+      {
+        platform: "windows",
+        remoteSession: false,
+        monitorCount: 2,
+      },
+    ],
+    prohibitedApplicationMatches: [
+      {
+        ruleId: "interview.assistant",
+        matchKinds: ["process_name", "window_title"],
       },
     ],
   });
@@ -221,6 +281,7 @@ test("submitNativeMonitoringSnapshot posts native reports only to the backend", 
       authToken: "session-jwt",
       sessionId: "session-a",
       participantId: "participant-a",
+      monitoringConsentId: "consent-a",
       windowStartedAt: "2026-07-11T01:02:00.000Z",
       windowEndedAt: "2026-07-11T01:03:00.000Z",
       snapshot,
@@ -259,6 +320,7 @@ test("submitNativeMonitoringSnapshot posts native reports only to the backend", 
   assert.equal(calls[0].init.headers["Content-Type"], "application/json");
   assert.deepEqual(JSON.parse(calls[0].init.body), {
     participantId: "participant-a",
+    monitoringConsentId: "consent-a",
     windowStartedAt: "2026-07-11T01:02:00.000Z",
     windowEndedAt: "2026-07-11T01:03:00.000Z",
     nativeReport: snapshot.riskSignalReport,
@@ -272,6 +334,7 @@ test("submitNativeMonitoringSnapshot handles clean native report responses", asy
       authToken: "session-jwt",
       sessionId: "session-a",
       participantId: "participant-a",
+      monitoringConsentId: "consent-a",
       windowStartedAt: "2026-07-11T01:02:00.000Z",
       windowEndedAt: "2026-07-11T01:03:00.000Z",
       snapshot: {

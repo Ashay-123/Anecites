@@ -7,6 +7,7 @@ import {
 } from "livekit-server-sdk";
 
 import { type ServerConfig } from "./config.js";
+import { createRecordingStorageKey } from "./evidence-storage.js";
 import { HttpError } from "./http-error.js";
 
 export interface LiveKitJoinTokenRequest {
@@ -27,6 +28,12 @@ export interface LiveKitEgressClient {
     roomName: string,
     output: { file: EncodedFileOutput },
     options: { layout: string },
+  ): Promise<LiveKitRecordingInfo>;
+  startParticipantEgress(
+    roomName: string,
+    participantIdentity: string,
+    output: { file: EncodedFileOutput },
+    options: { screenShare: false },
   ): Promise<LiveKitRecordingInfo>;
   stopEgress(egressId: string): Promise<LiveKitRecordingInfo>;
 }
@@ -118,6 +125,40 @@ export async function startLiveKitRoomRecording(
   }
 }
 
+export async function startLiveKitCandidateRecording(
+  config: ServerConfig,
+  request: { sessionId: string; participantId: string },
+  egressClient: LiveKitEgressClient = createLiveKitEgressClient(config),
+): Promise<LiveKitRecordingResponse> {
+  ensureLiveKitRecordingStorage(config);
+
+  const roomName = createLiveKitRoomName(request.sessionId);
+  const participantIdentity = createLiveKitParticipantIdentity(request.participantId);
+  const file = createLiveKitRecordingOutput(config, request.sessionId);
+
+  try {
+    const recording = await egressClient.startParticipantEgress(
+      roomName,
+      participantIdentity,
+      {
+        file,
+      },
+      {
+        screenShare: false,
+      },
+    );
+
+    return {
+      egressId: recording.egressId,
+      roomName: recording.roomName || roomName,
+      status: recording.status,
+      filepath: file.filepath,
+    };
+  } catch {
+    throw new HttpError(502, "LIVEKIT_UPSTREAM_ERROR", "LiveKit recording service failed");
+  }
+}
+
 export async function stopLiveKitRoomRecording(
   config: ServerConfig,
   egressId: string,
@@ -146,7 +187,7 @@ function createLiveKitEgressClient(config: ServerConfig): LiveKitEgressClient {
 function createLiveKitRecordingOutput(config: ServerConfig, sessionId: string): EncodedFileOutput {
   return new EncodedFileOutput({
     fileType: EncodedFileType.MP4,
-    filepath: `${config.livekitRecordingKeyPrefix}/${sessionId}/${Date.now()}.mp4`,
+    filepath: createRecordingStorageKey(config, sessionId),
     output: {
       case: "s3",
       value: new S3Upload({

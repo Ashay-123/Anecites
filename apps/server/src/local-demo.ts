@@ -11,6 +11,7 @@ import {
 import { issueAuthToken, requireAuth, type AuthenticatedPrincipal } from "./auth.js";
 import { type ServerConfig } from "./config.js";
 import { HttpError } from "./http-error.js";
+import { assertSessionAllowsParticipantJoin } from "./recording-lifecycle.js";
 import {
   defaultLocalDemoProblemSlug,
   localDemoProblemSeeds,
@@ -21,6 +22,7 @@ import {
 const DEMO_MEETING_TTL_MS = 4 * 60 * 60 * 1_000;
 const DEMO_TOKEN_TTL_SECONDS = DEMO_MEETING_TTL_MS / 1_000;
 const DEMO_STORE_LIMIT = 100;
+const DEMO_EDITOR_DOCUMENT_LIMIT = 10;
 const DEMO_PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const DEMO_CODE_PATTERN = /^\d{6}$/;
 const DEMO_PASSWORD_PATTERN = /^[A-Z2-9]{8}$/;
@@ -33,7 +35,7 @@ interface LocalDemoMeetingRecord {
   code: string;
   passwordDigest: Buffer;
   sessionId: string;
-  documentId: string;
+  activeDocumentId: string;
   languageId: number;
   expiresAt: Date;
   codeEditorOpen: boolean;
@@ -51,6 +53,14 @@ interface LocalDemoJoinBody {
 interface LocalDemoWorkspaceStateBody {
   sessionId: string;
   codeEditorOpen: boolean;
+}
+
+interface LocalDemoDocumentBody {
+  sessionId: string;
+}
+
+interface LocalDemoActiveDocumentBody extends LocalDemoDocumentBody {
+  documentId: string;
 }
 
 export function createLocalDemoRouter(prisma: PrismaClient, config: ServerConfig): Router {
@@ -133,7 +143,7 @@ export function createLocalDemoRouter(prisma: PrismaClient, config: ServerConfig
         code,
         passwordDigest: digestPassword(password),
         sessionId: session.id,
-        documentId: document.id,
+        activeDocumentId: document.id,
         languageId: problem.languageId,
         expiresAt,
         codeEditorOpen: false,
@@ -179,6 +189,8 @@ export function createLocalDemoRouter(prisma: PrismaClient, config: ServerConfig
         throw new HttpError(401, "LOCAL_DEMO_ACCESS_DENIED", "Meeting code or password is incorrect");
       }
 
+      await assertSessionAllowsParticipantJoin(prisma, meeting.sessionId);
+
       const candidateUserId = randomUUID();
       const participant = await prisma.participant.create({
         data: {
@@ -211,7 +223,7 @@ export function createLocalDemoRouter(prisma: PrismaClient, config: ServerConfig
       response.status(201).json({
         connection: {
           sessionId: meeting.sessionId,
-          documentId: meeting.documentId,
+          documentId: meeting.activeDocumentId,
           participantId: participant.id,
           authToken,
           role: "candidate",
@@ -223,7 +235,7 @@ export function createLocalDemoRouter(prisma: PrismaClient, config: ServerConfig
     }
   });
 
-  router.get("/meetings/state", requireAuth(config), (request, response, next) => {
+  router.get("/meetings/state", requireAuth(config), async (request, response, next) => {
     try {
       removeExpiredMeetings(meetings);
       const sessionId = parseSessionIdQuery(request.query.sessionId);
@@ -233,10 +245,10 @@ export function createLocalDemoRouter(prisma: PrismaClient, config: ServerConfig
         throw new HttpError(404, "LOCAL_DEMO_NOT_FOUND", "Local demo meeting was not found");
       }
 
+      await requireActiveMeetingParticipant(prisma, response.locals.authenticatedPrincipal, meeting.sessionId);
+
       response.status(200).json({
-        state: {
-          codeEditorOpen: meeting.codeEditorOpen,
-        },
+        state: await serializeWorkspaceState(prisma, meeting),
       });
     } catch (error) {
       next(error);
@@ -281,14 +293,14 @@ export function createLocalDemoRouter(prisma: PrismaClient, config: ServerConfig
         problem: toLocalDemoProblem(session.problem),
         starterCode: session.problem.starterCode,
         languageId: session.problem.languageId,
-        documentId: meeting.documentId,
+        documentId: meeting.activeDocumentId,
       });
     } catch (error) {
       next(error);
     }
   });
 
-  router.patch("/meetings/state", requireAuth(config), (request, response, next) => {
+  router.patch("/meetings/state", requireAuth(config), async (request, response, next) => {
     try {
       removeExpiredMeetings(meetings);
       const principal = response.locals.authenticatedPrincipal as AuthenticatedPrincipal | undefined;
@@ -304,12 +316,88 @@ export function createLocalDemoRouter(prisma: PrismaClient, config: ServerConfig
         throw new HttpError(404, "LOCAL_DEMO_NOT_FOUND", "Local demo meeting was not found");
       }
 
+      await requireActiveMeetingParticipant(prisma, principal, meeting.sessionId);
+
       meeting.codeEditorOpen = body.codeEditorOpen;
 
       response.status(200).json({
-        state: {
-          codeEditorOpen: meeting.codeEditorOpen,
+        state: await serializeWorkspaceState(prisma, meeting),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/meetings/documents", requireAuth(config), async (request, response, next) => {
+    try {
+      removeExpiredMeetings(meetings);
+      const body = parseDocumentBody(request.body);
+      const meeting = findMeetingBySessionId(meetings, body.sessionId);
+      if (!meeting) {
+        throw new HttpError(404, "LOCAL_DEMO_NOT_FOUND", "Local demo meeting was not found");
+      }
+      await requireActiveMeetingParticipant(
+        prisma,
+        response.locals.authenticatedPrincipal,
+        meeting.sessionId,
+      );
+
+      const documentCount = await prisma.editorDocument.count({
+        where: { sessionId: meeting.sessionId },
+      });
+      if (documentCount >= DEMO_EDITOR_DOCUMENT_LIMIT) {
+        throw new HttpError(
+          409,
+          "LOCAL_DEMO_DOCUMENT_LIMIT",
+          `Local demo cannot contain more than ${DEMO_EDITOR_DOCUMENT_LIMIT} editor tabs`,
+        );
+      }
+
+      const document = await prisma.editorDocument.create({
+        data: {
+          sessionId: meeting.sessionId,
+          language: meeting.languageId === 71 ? "python" : "javascript",
+          initialContent: "",
         },
+      });
+      meeting.activeDocumentId = document.id;
+
+      response.status(201).json({
+        state: await serializeWorkspaceState(prisma, meeting),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.patch("/meetings/documents/active", requireAuth(config), async (request, response, next) => {
+    try {
+      removeExpiredMeetings(meetings);
+      const body = parseActiveDocumentBody(request.body);
+      const meeting = findMeetingBySessionId(meetings, body.sessionId);
+      if (!meeting) {
+        throw new HttpError(404, "LOCAL_DEMO_NOT_FOUND", "Local demo meeting was not found");
+      }
+      await requireActiveMeetingParticipant(
+        prisma,
+        response.locals.authenticatedPrincipal,
+        meeting.sessionId,
+      );
+
+      const document = await prisma.editorDocument.findFirst({
+        where: {
+          id: body.documentId,
+          sessionId: meeting.sessionId,
+        },
+        select: { id: true },
+      });
+      if (!document) {
+        throw new HttpError(404, "LOCAL_DEMO_DOCUMENT_NOT_FOUND", "Editor tab was not found");
+      }
+      meeting.activeDocumentId = document.id;
+
+      response.status(200).json({
+        state: await serializeWorkspaceState(prisma, meeting),
       });
     } catch (error) {
       next(error);
@@ -598,6 +686,77 @@ function parseWorkspaceStateBody(value: unknown): LocalDemoWorkspaceStateBody {
   return {
     sessionId,
     codeEditorOpen,
+  };
+}
+
+function parseDocumentBody(value: unknown): LocalDemoDocumentBody {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(400, "BAD_REQUEST", "sessionId is required");
+  }
+  const sessionId = typeof (value as Record<string, unknown>).sessionId === "string"
+    ? String((value as Record<string, unknown>).sessionId).trim()
+    : "";
+  if (!sessionId) {
+    throw new HttpError(400, "BAD_REQUEST", "sessionId is required");
+  }
+  return { sessionId };
+}
+
+function parseActiveDocumentBody(value: unknown): LocalDemoActiveDocumentBody {
+  const body = parseDocumentBody(value);
+  const documentId = typeof (value as Record<string, unknown>).documentId === "string"
+    ? String((value as Record<string, unknown>).documentId).trim()
+    : "";
+  if (!documentId) {
+    throw new HttpError(400, "BAD_REQUEST", "documentId is required");
+  }
+  return { ...body, documentId };
+}
+
+async function requireActiveMeetingParticipant(
+  prisma: PrismaClient,
+  principalValue: unknown,
+  sessionId: string,
+): Promise<void> {
+  const principal = principalValue as AuthenticatedPrincipal | undefined;
+  if (!principal) {
+    throw new HttpError(401, "UNAUTHENTICATED", "Invalid bearer token");
+  }
+  const participant = await prisma.participant.findFirst({
+    where: {
+      sessionId,
+      userId: principal.subject,
+      leftAt: null,
+    },
+    select: { id: true },
+  });
+  if (!participant) {
+    throw new HttpError(403, "FORBIDDEN", "Participant cannot access this local demo meeting");
+  }
+}
+
+async function serializeWorkspaceState(
+  prisma: PrismaClient,
+  meeting: LocalDemoMeetingRecord,
+) {
+  const documents = await prisma.editorDocument.findMany({
+    where: { sessionId: meeting.sessionId },
+    orderBy: [
+      { createdAt: "asc" },
+      { id: "asc" },
+    ],
+    select: { id: true },
+  });
+  if (!documents.some((document) => document.id === meeting.activeDocumentId)) {
+    throw new HttpError(409, "LOCAL_DEMO_DOCUMENT_NOT_FOUND", "Active editor tab was not found");
+  }
+  return {
+    codeEditorOpen: meeting.codeEditorOpen,
+    activeDocumentId: meeting.activeDocumentId,
+    documents: documents.map((document, index) => ({
+      id: document.id,
+      label: `Solution ${index + 1}`,
+    })),
   };
 }
 

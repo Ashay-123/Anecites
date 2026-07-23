@@ -7,6 +7,7 @@ import {
   MonacoCollabEditor,
   createEditorPasteBlockedTelemetryEvent,
   createEditorYjsDocument,
+  installMonacoPasteGuards,
 } from "../dist/index.js";
 
 test("MonacoCollabEditor renders a stable editor host element", () => {
@@ -72,4 +73,42 @@ test("MonacoCollabEditor marks paste and context-menu paste paths as disabled", 
   assert.match(html, /data-paste-disabled="true"/);
 
   document.destroy();
+});
+
+test("Monaco paste guards override paste commands and keyboard shortcuts", async () => {
+  const actions = [];
+  const disposed = [];
+  const editor = {
+    addAction(action) {
+      actions.push(action);
+      return {
+        dispose() {
+          disposed.push(action.id);
+        },
+      };
+    },
+  };
+  let blockedCount = 0;
+  const guard = installMonacoPasteGuards(
+    editor,
+    {
+      ctrlCmd: 2_048,
+      shift: 1_024,
+      keyV: 52,
+      insert: 19,
+    },
+    () => {
+      blockedCount += 1;
+    },
+  );
+
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].id, "editor.action.clipboardPasteAction");
+  assert.deepEqual(actions[0].keybindings, [2_100, 1_043]);
+
+  await actions[0].run();
+  assert.equal(blockedCount, 1);
+
+  guard.dispose();
+  assert.deepEqual(disposed, ["editor.action.clipboardPasteAction"]);
 });

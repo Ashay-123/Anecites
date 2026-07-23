@@ -389,18 +389,31 @@ class DevToolsConnection {
   }
 
   async evaluate(sessionId, expression, timeout) {
-    const result = await this.send(sessionId, "Runtime.evaluate", {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-      timeout,
-    });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const result = await this.send(sessionId, "Runtime.evaluate", {
+          expression,
+          awaitPromise: true,
+          returnByValue: true,
+          timeout,
+        });
 
-    if (result.exceptionDetails) {
-      throw new Error(`Browser evaluation failed: ${JSON.stringify(result.exceptionDetails)}`);
+        if (result.exceptionDetails) {
+          throw new Error(`Browser evaluation failed: ${JSON.stringify(result.exceptionDetails)}`);
+        }
+
+        return result.result?.value;
+      } catch (error) {
+        if (attempt < 2 && isExecutionContextDestroyed(error)) {
+          await delay(200);
+          continue;
+        }
+
+        throw error;
+      }
     }
 
-    return result.result?.value;
+    throw new Error("Browser evaluation did not complete");
   }
 
   sendCommand(payload) {
@@ -419,6 +432,10 @@ class DevToolsConnection {
       this.socket.close();
     }
   }
+}
+
+function isExecutionContextDestroyed(error) {
+  return error instanceof Error && error.message.includes("Execution context was destroyed");
 }
 
 async function stopBrowser(browser) {

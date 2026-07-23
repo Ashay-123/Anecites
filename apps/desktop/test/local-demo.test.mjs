@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createLocalDemoEditorDocument,
   createLocalDemoJoinLink,
   getLocalDemoWorkspaceState,
   hostLocalDemoMeeting,
   joinLocalDemoMeeting,
   readLocalDemoJoinCode,
   resolveLocalDemoServiceUrls,
+  selectLocalDemoEditorDocument,
   updateLocalDemoWorkspaceState,
 } from "../dist/local-demo.js";
 
@@ -150,6 +152,8 @@ test("local demo workspace state uses authenticated backend-only controls", asyn
       return jsonResponse({
         state: {
           codeEditorOpen: false,
+          activeDocumentId: "document-a",
+          documents: [{ id: "document-a", label: "Solution 1" }],
         },
       });
     },
@@ -157,6 +161,8 @@ test("local demo workspace state uses authenticated backend-only controls", asyn
 
   assert.deepEqual(state, {
     codeEditorOpen: false,
+    activeDocumentId: "document-a",
+    documents: [{ id: "document-a", label: "Solution 1" }],
   });
   assert.equal(calls[0].url, "http://127.0.0.1:3000/local-demo/meetings/state?sessionId=session-a");
   assert.equal(calls[0].init.method, "GET");
@@ -173,6 +179,8 @@ test("local demo workspace state uses authenticated backend-only controls", asyn
       return jsonResponse({
         state: {
           codeEditorOpen: true,
+          activeDocumentId: "document-a",
+          documents: [{ id: "document-a", label: "Solution 1" }],
         },
       });
     },
@@ -180,6 +188,8 @@ test("local demo workspace state uses authenticated backend-only controls", asyn
 
   assert.deepEqual(updatedState, {
     codeEditorOpen: true,
+    activeDocumentId: "document-a",
+    documents: [{ id: "document-a", label: "Solution 1" }],
   });
   assert.equal(calls[1].url, "http://127.0.0.1:3000/local-demo/meetings/state");
   assert.equal(calls[1].init.method, "PATCH");
@@ -187,5 +197,58 @@ test("local demo workspace state uses authenticated backend-only controls", asyn
   assert.deepEqual(JSON.parse(calls[1].init.body), {
     sessionId: "session-a",
     codeEditorOpen: true,
+  });
+
+  const createdState = await createLocalDemoEditorDocument(
+    {
+      sessionId: "session-a",
+      authToken: "candidate-token",
+    },
+    async (url, init) => {
+      calls.push({ url, init });
+      return jsonResponse({
+        state: {
+          codeEditorOpen: true,
+          activeDocumentId: "document-b",
+          documents: [
+            { id: "document-a", label: "Solution 1" },
+            { id: "document-b", label: "Solution 2" },
+          ],
+        },
+      }, 201);
+    },
+  );
+
+  assert.equal(createdState.activeDocumentId, "document-b");
+  assert.equal(createdState.documents.length, 2);
+  assert.equal(calls[2].url, "http://127.0.0.1:3000/local-demo/meetings/documents");
+  assert.deepEqual(JSON.parse(calls[2].init.body), { sessionId: "session-a" });
+
+  const selectedState = await selectLocalDemoEditorDocument(
+    {
+      sessionId: "session-a",
+      authToken: "interviewer-token",
+      documentId: "document-a",
+    },
+    async (url, init) => {
+      calls.push({ url, init });
+      return jsonResponse({
+        state: {
+          codeEditorOpen: true,
+          activeDocumentId: "document-a",
+          documents: [
+            { id: "document-a", label: "Solution 1" },
+            { id: "document-b", label: "Solution 2" },
+          ],
+        },
+      });
+    },
+  );
+
+  assert.equal(selectedState.activeDocumentId, "document-a");
+  assert.equal(calls[3].url, "http://127.0.0.1:3000/local-demo/meetings/documents/active");
+  assert.deepEqual(JSON.parse(calls[3].init.body), {
+    sessionId: "session-a",
+    documentId: "document-a",
   });
 });

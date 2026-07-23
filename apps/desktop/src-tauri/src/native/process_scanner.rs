@@ -1,4 +1,6 @@
 use serde::Serialize;
+#[cfg(target_os = "windows")]
+use sha2::{Digest, Sha256};
 
 use super::platform;
 use super::types::NativeCommandError;
@@ -11,6 +13,10 @@ use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 const MAX_PROCESS_SCAN_LIMIT: u16 = 500;
@@ -122,4 +128,45 @@ fn wide_null_terminated_to_string(value: &[u16]) -> String {
     String::from_utf16_lossy(&value[..length])
         .trim()
         .to_string()
+}
+
+#[cfg(target_os = "windows")]
+pub fn executable_sha256(pid: u32) -> Option<String> {
+    use std::fs::File;
+    use std::io::{BufReader, Read};
+
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return None;
+    }
+
+    let mut buffer = vec![0_u16; 32_768];
+    let mut length = buffer.len() as u32;
+    let queried =
+        unsafe { QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length) } != 0;
+    unsafe {
+        CloseHandle(process);
+    }
+    if !queried || length == 0 {
+        return None;
+    }
+
+    let path = String::from_utf16_lossy(&buffer[..length as usize]);
+    let file = File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut chunk).ok()?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&chunk[..read]);
+    }
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn executable_sha256(_pid: u32) -> Option<String> {
+    None
 }

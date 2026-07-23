@@ -35,7 +35,11 @@ export {
   type EditorTelemetryOptions,
 } from "./editor-telemetry.js";
 export {
+  applyEditorTextChanges,
+  installMonacoPasteGuards,
   MonacoCollabEditor,
+  type EditorTextChange,
+  type MonacoPasteGuardKeybindings,
   type MonacoCollabEditorProps,
 } from "./MonacoCollabEditor.js";
 export {

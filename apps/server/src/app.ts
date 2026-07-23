@@ -10,10 +10,14 @@ import { requireAuth } from "./auth.js";
 import { type FetchLike } from "./code-execution-provider.js";
 import { createCodeExecutionRouter } from "./code-executions.js";
 import { type ServerConfig } from "./config.js";
+import { createEvidenceStorage, type EvidenceStorage } from "./evidence-storage.js";
 import { isHttpError } from "./http-error.js";
 import { type LiveKitEgressClient } from "./livekit.js";
+import { createLiveKitWebhookHandler } from "./livekit-webhooks.js";
 import { createLocalDemoRouter } from "./local-demo.js";
 import { consoleLogger, type Logger } from "./logger.js";
+import { type MediaAnalysisPublisher } from "./media-analysis-publisher.js";
+import { type RecordingVerificationPublisher } from "./recording-verification-publisher.js";
 import { createSessionRouter } from "./sessions.js";
 
 export interface CreateAppOptions {
@@ -21,6 +25,9 @@ export interface CreateAppOptions {
   prisma?: PrismaClient;
   fetch?: FetchLike;
   liveKitEgressClient?: LiveKitEgressClient;
+  mediaAnalysisPublisher?: MediaAnalysisPublisher;
+  recordingVerificationPublisher?: RecordingVerificationPublisher;
+  evidenceStorage?: EvidenceStorage;
 }
 
 export function createApp(config: ServerConfig, options: CreateAppOptions = {}) {
@@ -34,10 +41,23 @@ export function createApp(config: ServerConfig, options: CreateAppOptions = {}) 
   });
   const app = express();
   const fetchImpl = options.fetch ?? fetch;
+  const evidenceStorage = options.evidenceStorage ?? createOptionalEvidenceStorage(config);
 
   app.disable("x-powered-by");
   app.use(createRequestLogger(logger));
   app.use(createCorsMiddleware(config));
+  if (config.livekitApiKey && config.livekitApiSecret) {
+    app.post(
+      "/webhooks/livekit",
+      express.raw({ type: "application/webhook+json", limit: "64kb" }),
+      createLiveKitWebhookHandler(
+        prisma,
+        config,
+        options.mediaAnalysisPublisher,
+        options.recordingVerificationPublisher,
+      ),
+    );
+  }
   app.use(express.json({ limit: config.jsonBodyLimit }));
 
   app.get("/health", (_request: Request, response: Response) => {
@@ -52,7 +72,17 @@ export function createApp(config: ServerConfig, options: CreateAppOptions = {}) 
     app.use("/local-demo", createLocalDemoRouter(prisma, config));
   }
 
-  app.use("/sessions", requireAuth(config), createSessionRouter(prisma, config, options.liveKitEgressClient));
+  app.use(
+    "/sessions",
+    requireAuth(config),
+    createSessionRouter(
+      prisma,
+      config,
+      options.liveKitEgressClient,
+      options.mediaAnalysisPublisher,
+      evidenceStorage,
+    ),
+  );
   app.use("/code-executions", requireAuth(config), createCodeExecutionRouter(prisma, config, fetchImpl));
 
   app.use((_request: Request, response: Response) => {
@@ -67,6 +97,13 @@ export function createApp(config: ServerConfig, options: CreateAppOptions = {}) 
   app.use(createErrorHandler(logger));
 
   return app;
+}
+
+function createOptionalEvidenceStorage(config: ServerConfig): EvidenceStorage | null {
+  if (!config.objectStorageEndpoint || !config.objectStorageBucket || !config.objectStorageAccessKeyId || !config.objectStorageSecretAccessKey) {
+    return null;
+  }
+  return createEvidenceStorage(config);
 }
 
 function createRequestLogger(logger: Logger): RequestHandler {

@@ -12,6 +12,7 @@ services:
     image: postgres:16-alpine
     profiles:
       - infra
+      - media-worker
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-anecites}
       POSTGRES_USER: ${POSTGRES_USER:-anecites}
@@ -29,6 +30,92 @@ services:
       retries: 5
     networks:
       - app_internal
+      - media_worker_control_internal
+    <<: *default-logging
+
+  media-inference:
+    build:
+      context: ..
+      dockerfile: apps/media-inference/Dockerfile
+    profiles:
+      - media-inference
+      - media-worker
+    environment:
+      MEDIA_INFERENCE_AUTH_TOKEN: ${MEDIA_INFERENCE_AUTH_TOKEN:-local_media_inference_dev_token_change_me}
+      MEDIA_INFERENCE_ALLOWED_BUCKETS: ${MEDIA_INFERENCE_ALLOWED_BUCKETS:-anecites-dev}
+      MEDIA_INFERENCE_MAX_MEDIA_BYTES: ${MEDIA_INFERENCE_MAX_MEDIA_BYTES:-536870912}
+      MEDIA_INFERENCE_PROCESSING_TIMEOUT_SECONDS: ${MEDIA_INFERENCE_PROCESSING_TIMEOUT_SECONDS:-240}
+      MEDIA_INFERENCE_FACE_MIN_DETECTION_CONFIDENCE: ${MEDIA_INFERENCE_FACE_MIN_DETECTION_CONFIDENCE:-0.5}
+      MEDIA_INFERENCE_VIDEO_FRAMES_PER_WINDOW: ${MEDIA_INFERENCE_VIDEO_FRAMES_PER_WINDOW:-5}
+      MEDIA_INFERENCE_VAD_THRESHOLD: ${MEDIA_INFERENCE_VAD_THRESHOLD:-0.5}
+      MEDIA_INFERENCE_VAD_MIN_SPEECH_MS: ${MEDIA_INFERENCE_VAD_MIN_SPEECH_MS:-250}
+      MEDIA_INFERENCE_SPEAKER_DIARIZATION_ENABLED: ${MEDIA_INFERENCE_SPEAKER_DIARIZATION_ENABLED:-false}
+      MEDIA_INFERENCE_SPEAKER_DIARIZATION_MODEL_PATH: ${MEDIA_INFERENCE_SPEAKER_DIARIZATION_MODEL_PATH:-/models/pyannote/speaker-diarization-community-1}
+      MEDIA_INFERENCE_SPEAKER_DIARIZATION_MODEL_REVISION: ${MEDIA_INFERENCE_SPEAKER_DIARIZATION_MODEL_REVISION:-}
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-anecites}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-anecites_dev_password}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_FORCE_PATH_STYLE: "true"
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - media_inference_internal
+      - media_worker_rpc_internal
+    read_only: true
+    tmpfs:
+      - /tmp:size=536870912,mode=1777
+    volumes:
+      - media_models:/models/pyannote:ro
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: "2.0"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json, urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5))['status'] == 'ok'"
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 120s
+    <<: *default-logging
+
+  media-model-bootstrap:
+    build:
+      context: ..
+      dockerfile: apps/media-inference/Dockerfile
+    profiles:
+      - media-model-bootstrap
+    command:
+      - python
+      - scripts/bootstrap_diarization_model.py
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /tmp/huggingface
+      HF_HUB_OFFLINE: "0"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      PYANNOTE_METRICS_ENABLED: "0"
+      MEDIA_INFERENCE_SPEAKER_DIARIZATION_MODEL_REVISION: ${MEDIA_INFERENCE_SPEAKER_DIARIZATION_MODEL_REVISION:-}
+    user: "0:0"
+    read_only: true
+    tmpfs:
+      - /tmp:size=536870912,mode=1777
+    volumes:
+      - media_models:/models/pyannote
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 4g
+    cpus: "2.0"
     <<: *default-logging
 
   redis:
@@ -59,6 +146,7 @@ services:
     image: rabbitmq:3-management-alpine
     profiles:
       - infra
+      - media-worker
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-anecites}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-anecites_dev_password}
@@ -77,12 +165,16 @@ services:
       retries: 5
     networks:
       - app_internal
+      - media_worker_control_internal
     <<: *default-logging
 
   minio:
     image: minio/minio:latest
     profiles:
       - infra
+      - media-inference
+      - media-worker
+      - livekit
     command:
       - server
       - /data
@@ -107,6 +199,53 @@ services:
       retries: 5
     networks:
       - app_internal
+      - media_inference_internal
+    <<: *default-logging
+
+  media-worker:
+    build:
+      context: ..
+      dockerfile: apps/media-worker/Dockerfile
+    profiles:
+      - media-worker
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-anecites}:${POSTGRES_PASSWORD:-anecites_dev_password}@postgres:5432/${POSTGRES_DB:-anecites}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-anecites}:${RABBITMQ_PASSWORD:-anecites_dev_password}@rabbitmq:5672
+      MEDIA_ANALYSIS_QUEUE_NAME: ${MEDIA_ANALYSIS_QUEUE_NAME:-media-analysis.jobs}
+      MEDIA_ANALYSIS_CONSUMER_PREFETCH: ${MEDIA_ANALYSIS_CONSUMER_PREFETCH:-1}
+      MEDIA_ANALYSIS_MAX_RETRIES: ${MEDIA_ANALYSIS_MAX_RETRIES:-3}
+      MEDIA_ANALYSIS_RETRY_DELAY_MS: ${MEDIA_ANALYSIS_RETRY_DELAY_MS:-5000}
+      MEDIA_ANALYSIS_JOB_LEASE_MS: ${MEDIA_ANALYSIS_JOB_LEASE_MS:-600000}
+      MEDIA_ANALYSIS_SHADOW_QUEUE_NAME: ${MEDIA_ANALYSIS_SHADOW_QUEUE_NAME:-media-analysis.shadow.v1.jobs}
+      RECORDING_VERIFICATION_QUEUE_NAME: ${RECORDING_VERIFICATION_QUEUE_NAME:-recording-verification.jobs}
+      RECORDING_COMPLETENESS_ABSOLUTE_TOLERANCE_MS: ${RECORDING_COMPLETENESS_ABSOLUTE_TOLERANCE_MS:-5000}
+      RECORDING_COMPLETENESS_RELATIVE_TOLERANCE_PERCENT: ${RECORDING_COMPLETENESS_RELATIVE_TOLERANCE_PERCENT:-2}
+      RECORDING_VERIFICATION_TIMEOUT_MS: ${RECORDING_VERIFICATION_TIMEOUT_MS:-30000}
+      MEDIA_INFERENCE_BASE_URL: http://media-inference:8080
+      MEDIA_INFERENCE_AUTH_TOKEN: ${MEDIA_INFERENCE_AUTH_TOKEN:-local_media_inference_dev_token_change_me}
+      MEDIA_INFERENCE_EXPECTED_ADAPTER_VERSION: ${MEDIA_INFERENCE_EXPECTED_ADAPTER_VERSION:-mediapipe-face-landmarker-0.10.35_silero-vad-6.2.1_pyannote-audio-4.0.7}
+      MEDIA_INFERENCE_SPEAKER_DIARIZATION_ENABLED: ${MEDIA_INFERENCE_SPEAKER_DIARIZATION_ENABLED:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      media-inference:
+        condition: service_healthy
+    networks:
+      - media_worker_control_internal
+      - media_worker_rpc_internal
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=67108864,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: "1.0"
     <<: *default-logging
 
   piston:
@@ -287,6 +426,7 @@ volumes:
   redis_data:
   rabbitmq_data:
   minio_data:
+  media_models:
   piston_packages:
   livekit_redis_data:
   judge0_postgres_data:
@@ -300,3 +440,9 @@ networks:
   judge0_internal:
     internal: true
   judge0_ingress:
+  media_inference_internal:
+    internal: true
+  media_worker_control_internal:
+    internal: true
+  media_worker_rpc_internal:
+    internal: true

@@ -1,8 +1,13 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
-import type {
-  NativeCaptureAffinityReport,
-  NativeRiskSignalReport,
-  NativeVirtualizationReport,
+import {
+  createNativeApplicationDetectionRules,
+  createNativeProhibitedApplicationMatch,
+  type NativeApplicationDetectionRule,
+  type NativeCaptureAffinityReport,
+  type NativeEnvironmentReport,
+  type NativeProhibitedApplicationMatch,
+  type NativeRiskSignalReport,
+  type NativeVirtualizationReport,
 } from "@anecites/shared";
 
 export interface NativeCapability {
@@ -45,6 +50,7 @@ export interface NativeMonitoringSnapshot {
 export interface NativeMonitoringOptions {
   processLimit?: number;
   windowLimit?: number;
+  prohibitedApplicationRules?: readonly NativeApplicationDetectionRule[];
 }
 
 export interface SubmitNativeMonitoringSnapshotRequest {
@@ -52,6 +58,7 @@ export interface SubmitNativeMonitoringSnapshotRequest {
   authToken: string;
   sessionId: string;
   participantId: string;
+  monitoringConsentId: string;
   windowStartedAt: string;
   windowEndedAt: string;
   snapshot: NativeMonitoringSnapshot;
@@ -74,6 +81,8 @@ const REQUIRED_NATIVE_CAPABILITIES = [
   "window_monitor",
   "capture_affinity",
   "virtualization_detection",
+  "prohibited_application_detection",
+  "environment_detection",
 ] as const;
 
 export function isNativeMonitoringRuntimeAvailable(): boolean {
@@ -90,6 +99,9 @@ export async function collectNativeMonitoringSnapshot(
     options.processLimit ?? DEFAULT_PROCESS_SCAN_LIMIT,
   );
   const windowLimit = requireScanLimit("windowLimit", options.windowLimit ?? DEFAULT_WINDOW_SCAN_LIMIT);
+  const prohibitedApplicationRules = createNativeApplicationDetectionRules(
+    options.prohibitedApplicationRules ?? [],
+  );
   const occurredAt = requireTimestamp(now());
   const capabilities = await invokeImpl<NativeCapability[]>("get_native_capabilities");
   requireAvailableCapabilities(capabilities);
@@ -116,6 +128,17 @@ export async function collectNativeMonitoringSnapshot(
   }
 
   const virtualizationReport = await invokeImpl<NativeVirtualizationReport>("detect_virtualization");
+  const environmentReport = await invokeImpl<NativeEnvironmentReport>("detect_environment");
+  const prohibitedApplicationMatches = prohibitedApplicationRules.length === 0
+    ? []
+    : parseProhibitedApplicationMatches(
+        await invokeImpl<unknown>("detect_prohibited_applications", {
+          rules: prohibitedApplicationRules,
+          processLimit,
+          windowLimit,
+        }),
+        prohibitedApplicationRules,
+      );
 
   return {
     occurredAt,
@@ -125,7 +148,9 @@ export async function collectNativeMonitoringSnapshot(
     riskSignalReport: {
       occurredAt,
       captureAffinityReports,
+      environmentReports: [environmentReport],
       virtualizationReports: [virtualizationReport],
+      prohibitedApplicationMatches,
     },
   };
 }
@@ -144,6 +169,7 @@ export async function submitNativeMonitoringSnapshot(
       },
       body: JSON.stringify({
         participantId: request.participantId,
+        monitoringConsentId: request.monitoringConsentId,
         windowStartedAt: request.windowStartedAt,
         windowEndedAt: request.windowEndedAt,
         nativeReport: request.snapshot.riskSignalReport,
@@ -207,6 +233,24 @@ function parseNativeMonitoringSubmissionResult(body: unknown): NativeMonitoringS
     signalCount,
     riskSummary: record.riskSummary ?? null,
   };
+}
+
+function parseProhibitedApplicationMatches(
+  value: unknown,
+  configuredRules: readonly NativeApplicationDetectionRule[],
+): NativeProhibitedApplicationMatch[] {
+  if (!Array.isArray(value)) {
+    throw new Error("Native prohibited application response is invalid");
+  }
+
+  const configuredRuleIds = new Set(configuredRules.map((rule) => rule.id));
+  return value.map((candidate) => {
+    const match = createNativeProhibitedApplicationMatch(candidate);
+    if (!configuredRuleIds.has(match.ruleId)) {
+      throw new Error("Native prohibited application response contains an unknown rule");
+    }
+    return match;
+  });
 }
 
 function extractErrorMessage(body: unknown): string | null {

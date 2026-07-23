@@ -21,6 +21,7 @@ test("local demo starts joined candidates in video-first mode before the editor 
   assert.match(html, /Waiting for video/);
   assert.doesNotMatch(html, /aria-label="Shared code editor"/);
   assert.doesNotMatch(html, /class="candidate-run-button"/);
+  assert.doesNotMatch(html, />Start recording</);
   assert.doesNotMatch(html, /Native monitor/);
 });
 
@@ -43,6 +44,7 @@ test("local demo interviewer sees only candidate joining credentials and the edi
   assert.match(html, />ABCD2345</);
   assert.match(html, /aria-label="Copy candidate join link"/);
   assert.match(html, />Copy link</);
+  assert.match(html, />Start recording</);
   assert.match(html, />Code editor</);
   assert.doesNotMatch(html, /Session ID/);
   assert.doesNotMatch(html, /Document ID/);
@@ -93,8 +95,12 @@ test("local demo editor-open state renders a simple editor and output surface", 
   assert.doesNotMatch(html, /Submissions/);
   assert.doesNotMatch(html, />Submit</);
   assert.match(html, /aria-label="Shared code editor"/);
+  assert.match(html, /role="tablist"[^>]*aria-label="Code editor tabs"/);
+  assert.match(html, /role="tab"[^>]*aria-selected="true"[^>]*>Solution 1</);
+  assert.match(html, /aria-label="New editor tab"/);
   assert.match(html, /data-anecites-editor="monaco-collab"/);
   assert.match(html, /data-document-id="document-a"/);
+  assert.match(html, /data-paste-disabled="true"/);
   assert.match(html, /data-anecites-editor-input="true"/);
   assert.match(html, />Code editor</);
   assert.match(html, /class="candidate-run-button"[^>]*>Run</);
@@ -102,7 +108,22 @@ test("local demo editor-open state renders a simple editor and output surface", 
   assert.match(html, /Run code to see output/);
   assert.doesNotMatch(html, /class="candidate-submit-button"/);
   assert.doesNotMatch(html, /Testcase/);
-  assert.match(html, /aria-label="Video call"/);
+  assert.match(html, /aria-label="Interview video call"/);
+  assert.doesNotMatch(html, /aria-label="Video call"/);
+});
+
+test("interviewer code editor control toggles the open workspace", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(App, {
+      initialSession: createSession("interviewer"),
+      initialCodeEditorOpen: true,
+      nativeMonitoringAvailableOverride: false,
+    }),
+  );
+
+  assert.match(html, />Close editor</);
+  assert.match(html, /data-paste-disabled="false"/);
+  assert.doesNotMatch(html, />Editor open</);
 });
 
 function createSession(role) {

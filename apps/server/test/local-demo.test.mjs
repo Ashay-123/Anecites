@@ -202,6 +202,13 @@ test("local demo host and candidate use code/password to receive real session bo
   assert.equal(initialStateResult.response.status, 200);
   assert.deepEqual(initialStateResult.body.state, {
     codeEditorOpen: false,
+    activeDocumentId: hostResult.body.connection.documentId,
+    documents: [
+      {
+        id: hostResult.body.connection.documentId,
+        label: "Solution 1",
+      },
+    ],
   });
 
   const candidateUpdateResult = await jsonRequest(server, "/local-demo/meetings/state", {
@@ -232,7 +239,48 @@ test("local demo host and candidate use code/password to receive real session bo
   assert.equal(hostUpdateResult.response.status, 200);
   assert.deepEqual(hostUpdateResult.body.state, {
     codeEditorOpen: true,
+    activeDocumentId: hostResult.body.connection.documentId,
+    documents: [
+      {
+        id: hostResult.body.connection.documentId,
+        label: "Solution 1",
+      },
+    ],
   });
+
+  const createDocumentResult = await jsonRequest(server, "/local-demo/meetings/documents", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${joinResult.body.connection.authToken}`,
+    },
+    body: JSON.stringify({
+      sessionId: hostResult.body.connection.sessionId,
+    }),
+  });
+
+  assert.equal(createDocumentResult.response.status, 201);
+  assert.equal(createDocumentResult.body.state.documents.length, 2);
+  assert.equal(createDocumentResult.body.state.documents[0].label, "Solution 1");
+  assert.equal(createDocumentResult.body.state.documents[1].label, "Solution 2");
+  assert.equal(
+    createDocumentResult.body.state.activeDocumentId,
+    createDocumentResult.body.state.documents[1].id,
+  );
+
+  const selectDocumentResult = await jsonRequest(server, "/local-demo/meetings/documents/active", {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${hostResult.body.connection.authToken}`,
+    },
+    body: JSON.stringify({
+      sessionId: hostResult.body.connection.sessionId,
+      documentId: hostResult.body.connection.documentId,
+    }),
+  });
+
+  assert.equal(selectDocumentResult.response.status, 200);
+  assert.equal(selectDocumentResult.body.state.activeDocumentId, hostResult.body.connection.documentId);
+  assert.equal(selectDocumentResult.body.state.documents.length, 2);
 
   const openedStateResult = await jsonRequest(
     server,
@@ -248,6 +296,17 @@ test("local demo host and candidate use code/password to receive real session bo
   assert.equal(openedStateResult.response.status, 200);
   assert.deepEqual(openedStateResult.body.state, {
     codeEditorOpen: true,
+    activeDocumentId: hostResult.body.connection.documentId,
+    documents: [
+      {
+        id: hostResult.body.connection.documentId,
+        label: "Solution 1",
+      },
+      {
+        id: createDocumentResult.body.state.documents[1].id,
+        label: "Solution 2",
+      },
+    ],
   });
 
   const sessionResult = await jsonRequest(server, `/sessions/${joinResult.body.connection.sessionId}`, {
@@ -393,6 +452,44 @@ test("local demo host and candidate use code/password to receive real session bo
     submissionHistoryResult.body.submissions.every((submission) => submission.timeMs === null),
     true,
   );
+  assert.equal(
+    submissionHistoryResult.body.submissions.some((submission) => submission.stdout === "candidate run\n"),
+    true,
+  );
+  assert.equal(
+    submissionHistoryResult.body.submissions.some((submission) => submission.stderr === "ANECITES_SUBMIT:FAIL 3/3\n"),
+    true,
+  );
+
+  const recordingEvidence = await prisma.evidenceObject.create({
+    data: {
+      sessionId: hostResult.body.connection.sessionId,
+      kind: "SESSION_RECORDING",
+      storageBucket: "anecites-test",
+      storageKey: `recordings/${hostResult.body.connection.sessionId}/late-join.mp4`,
+      contentType: "video/mp4",
+    },
+  });
+  await prisma.sessionRecording.create({
+    data: {
+      sessionId: hostResult.body.connection.sessionId,
+      egressId: `egress-${hostResult.body.connection.sessionId}-late-join`,
+      evidenceObjectId: recordingEvidence.id,
+      state: "ACTIVE",
+      startedAt: new Date(),
+    },
+  });
+
+  const lateJoinResult = await jsonRequest(server, "/local-demo/meetings/join", {
+    method: "POST",
+    body: JSON.stringify({
+      code: hostResult.body.meeting.code,
+      password: hostResult.body.meeting.password,
+    }),
+  });
+
+  assert.equal(lateJoinResult.response.status, 409);
+  assert.equal(lateJoinResult.body.error.code, "RECORDING_PARTICIPANT_JOIN_BLOCKED");
 });
 
 test("local demo routes are unavailable unless explicitly enabled", async (t) => {

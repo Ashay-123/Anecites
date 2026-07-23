@@ -60,6 +60,41 @@ enum RiskReviewStatus {
   NEEDS_MORE_CONTEXT
 }
 
+enum MonitoringEventSource {
+  DESKTOP_APP
+  DESKTOP_NATIVE
+  EDITOR
+  MEDIA_WORKER
+  SERVER
+}
+
+enum MediaAnalysisJobRunStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+}
+
+enum SessionRecordingState {
+  ACTIVE
+  STOP_REQUESTED
+  COMPLETED
+  FAILED
+}
+
+enum RecordingVerificationState {
+  PENDING
+  VERIFYING
+  REVIEWABLE
+  INCOMPLETE
+  FAILED
+}
+
+enum GazeCalibrationState {
+  ACTIVE
+  COMPLETED
+  ABANDONED
+}
+
 model User {
   id                    String        @id @default(cuid())
   email                 String        @unique
@@ -89,6 +124,13 @@ model Session {
   codeSubmissions            CodeSubmission[]
   riskSummaries              RiskSummary[]
   evidenceObjects            EvidenceObject[]
+  mediaConsents              MediaConsent[]
+  monitoringConsents         MonitoringConsent[]
+  monitoringHeartbeats       MonitoringHeartbeat[]
+  riskEvents                 RiskEvent[]
+  mediaAnalysisJobRuns       MediaAnalysisJobRun[]
+  sessionRecordings          SessionRecording[]
+  gazeCalibrations           GazeCalibration[]
   problem                    InterviewProblem?          @relation(fields: [problemId], references: [id], onDelete: SetNull)
 
   @@index([problemId])
@@ -108,6 +150,13 @@ model Participant {
   session         Session          @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   codeSubmissions CodeSubmission[]
+  mediaConsents       MediaConsent[]
+  monitoringConsents   MonitoringConsent[]
+  monitoringHeartbeats MonitoringHeartbeat[]
+  riskEvents           RiskEvent[]
+  editorTelemetryAggregates EditorTelemetryAggregate[]
+  riskSummaries             RiskSummary[]
+  gazeCalibrations          GazeCalibration[]
 
   @@unique([sessionId, userId, role])
   @@index([sessionId])
@@ -130,9 +179,167 @@ model EvidenceObject {
   replayForDocuments    EditorDocument[] @relation("EditorDocumentReplayObject")
   codeSubmissionOutputs CodeSubmission[] @relation("CodeSubmissionOutputEvidence")
   riskSummaries         RiskSummary[]    @relation("RiskSummaryEvidenceObject")
+  riskEvents            RiskEvent[]      @relation("RiskEventEvidenceObject")
+  mediaAnalysisJobRuns  MediaAnalysisJobRun[]
+  sessionRecording      SessionRecording? @relation("SessionRecordingEvidence")
 
   @@unique([storageBucket, storageKey])
   @@index([sessionId, kind])
+}
+
+model MediaAnalysisJobRun {
+  jobId                     String                    @id
+  payloadSha256             String
+  sessionId                 String
+  recordingEvidenceObjectId String
+  status                    MediaAnalysisJobRunStatus @default(PENDING)
+  leaseVersion              Int                       @default(0)
+  lockedAt                  DateTime?
+  completedAt               DateTime?
+  riskSummaryId             String?                   @unique
+  createdAt                 DateTime                  @default(now())
+  updatedAt                 DateTime                  @updatedAt
+  session                   Session                   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  recordingEvidenceObject   EvidenceObject            @relation(fields: [recordingEvidenceObjectId], references: [id], onDelete: Cascade)
+  riskSummary               RiskSummary?              @relation(fields: [riskSummaryId], references: [id], onDelete: SetNull)
+
+  @@index([status, lockedAt])
+  @@index([sessionId, createdAt])
+  @@index([recordingEvidenceObjectId])
+}
+
+model SessionRecording {
+  id               String                @id @default(cuid())
+  sessionId        String
+  egressId         String                @unique
+  evidenceObjectId String                @unique
+  state            SessionRecordingState @default(ACTIVE)
+  verificationState RecordingVerificationState @default(PENDING)
+  startedAt        DateTime
+  stopRequestedAt  DateTime?
+  completedAt      DateTime?
+  failureCode      String?
+  verificationStartedAt DateTime?
+  verificationCompletedAt DateTime?
+  expectedDurationMs Int?
+  recordedDurationMs Int?
+  verificationFailureCode String?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  session          Session               @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  evidenceObject   EvidenceObject        @relation("SessionRecordingEvidence", fields: [evidenceObjectId], references: [id], onDelete: Cascade)
+  gazeCalibrations GazeCalibration[]
+
+  @@index([sessionId, state, createdAt])
+}
+
+model MediaConsent {
+  id                String      @id @default(cuid())
+  sessionId         String
+  participantId     String
+  noticeVersion     String
+  noticeFingerprint String
+  scopes            Json
+  grantedAt         DateTime
+  revokedAt         DateTime?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  session           Session     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  participant       Participant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, participantId, grantedAt])
+  @@index([participantId])
+}
+
+model GazeCalibration {
+  id                 String               @id @default(cuid())
+  sessionId          String
+  participantId      String
+  sessionRecordingId String?
+  state              GazeCalibrationState @default(ACTIVE)
+  steps              Json
+  startedAt          DateTime             @default(now())
+  completedAt        DateTime?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  session            Session              @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  participant        Participant          @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  sessionRecording   SessionRecording?    @relation(fields: [sessionRecordingId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, participantId, state, createdAt])
+  @@index([participantId, createdAt])
+  @@index([sessionRecordingId, createdAt])
+}
+
+model MonitoringConsent {
+  id                     String                @id @default(cuid())
+  sessionId              String
+  participantId          String
+  policyVersion          String
+  policyDigestSha256     String?
+  nativeMonitoringPolicy Json?
+  scopes                 Json
+  clientInstanceId       String
+  clientVersion          String
+  grantedAt              DateTime
+  revokedAt              DateTime?
+  monitoringStartedAt    DateTime
+  monitoringStoppedAt    DateTime?
+  stopReason             String?
+  lastSequence           Int                   @default(0)
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+  session                Session               @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  participant         Participant           @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  heartbeats          MonitoringHeartbeat[]
+  riskEvents          RiskEvent[]
+
+  @@index([sessionId, participantId, monitoringStartedAt])
+  @@index([sessionId, monitoringStartedAt])
+  @@index([participantId])
+}
+
+model MonitoringHeartbeat {
+  id                  String            @id @default(cuid())
+  monitoringConsentId String
+  sessionId           String
+  participantId       String
+  sequence            Int
+  occurredAt          DateTime
+  createdAt           DateTime          @default(now())
+  monitoringConsent   MonitoringConsent @relation(fields: [monitoringConsentId], references: [id], onDelete: Cascade)
+  session             Session           @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  participant         Participant       @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  @@unique([monitoringConsentId, sequence])
+  @@index([sessionId, occurredAt])
+  @@index([participantId, occurredAt])
+}
+
+model RiskEvent {
+  id                  String                 @id @default(cuid())
+  monitoringConsentId String?
+  sessionId           String
+  participantId       String?
+  evidenceObjectId    String?
+  sequence            Int?
+  type                String
+  source              MonitoringEventSource
+  confidence          Decimal                @db.Decimal(5, 4)
+  detectorVersion     String
+  occurredAt          DateTime
+  metadata            Json?
+  createdAt           DateTime               @default(now())
+  monitoringConsent   MonitoringConsent?     @relation(fields: [monitoringConsentId], references: [id], onDelete: SetNull)
+  session             Session                @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  participant         Participant?           @relation(fields: [participantId], references: [id], onDelete: SetNull)
+  evidenceObject      EvidenceObject?        @relation("RiskEventEvidenceObject", fields: [evidenceObjectId], references: [id], onDelete: SetNull)
+
+  @@unique([monitoringConsentId, sequence])
+  @@index([sessionId, occurredAt])
+  @@index([participantId, occurredAt])
+  @@index([type])
+  @@index([evidenceObjectId])
 }
 
 model EditorDocument {
@@ -156,6 +363,7 @@ model EditorDocument {
 model EditorTelemetryAggregate {
   id                String         @id @default(cuid())
   sessionId         String
+  participantId     String?
   documentId        String
   windowStartedAt   DateTime
   windowEndedAt     DateTime
@@ -166,10 +374,12 @@ model EditorTelemetryAggregate {
   maxInsertSize     Int            @default(0)
   createdAt         DateTime       @default(now())
   session           Session        @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  participant       Participant?   @relation(fields: [participantId], references: [id], onDelete: SetNull)
   document          EditorDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
-  @@unique([documentId, windowStartedAt, windowEndedAt])
+  @@unique([participantId, documentId, windowStartedAt, windowEndedAt])
   @@index([sessionId, windowStartedAt])
+  @@index([participantId, windowStartedAt])
 }
 
 model InterviewProblem {
@@ -241,24 +451,31 @@ model CodeSubmission {
 model RiskSummary {
   id                    String           @id @default(cuid())
   sessionId             String
+  participantId         String?
+  correlationKey        String?          @unique
   evidenceObjectId      String?
   windowStartedAt       DateTime
   windowEndedAt         DateTime
   score                 Decimal          @db.Decimal(5, 4)
   correlatedSignalCount Int
+  meetsCorrelationPolicy Boolean         @default(false)
   humanReviewRequired   Boolean          @default(true)
   reviewStatus          RiskReviewStatus @default(PENDING_REVIEW)
   reviewerId            String?
   reviewedAt            DateTime?
   rationale             String?          @db.Text
   signalBreakdown       Json
+  evidenceReferences    Json             @default("[]")
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
   session               Session          @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  participant           Participant?     @relation(fields: [participantId], references: [id], onDelete: SetNull)
   evidenceObject        EvidenceObject?  @relation("RiskSummaryEvidenceObject", fields: [evidenceObjectId], references: [id], onDelete: SetNull)
   reviewer              User?            @relation("RiskSummaryReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  mediaAnalysisJobRun   MediaAnalysisJobRun?
 
   @@index([sessionId, windowStartedAt])
+  @@index([sessionId, participantId, windowStartedAt])
   @@index([reviewStatus])
   @@index([evidenceObjectId])
   @@index([reviewerId])

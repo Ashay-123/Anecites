@@ -15,6 +15,7 @@ export interface EditorCollabSessionOptions {
 export interface EditorCollabSession {
   ready: Promise<void>;
   sendLocalState(): void;
+  sendPasteBlockedTelemetry(): void;
   close(): void;
 }
 
@@ -96,6 +97,13 @@ export function connectEditorCollabSession(
           update: bytesToBase64(encodeEditorYjsState(options.document)),
         }),
       );
+    },
+    sendPasteBlockedTelemetry() {
+      if (socket.readyState !== websocketOpenState) {
+        throw new Error("Collab WebSocket is not ready");
+      }
+
+      socket.send(JSON.stringify({ type: "telemetry:paste-blocked" }));
     },
     close() {
       closed = true;

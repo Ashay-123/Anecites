@@ -190,7 +190,7 @@ Goal: make collaborative editing reliable before building UI polish.
 Deliverables:
 - `apps/collab`
   - Yjs WebSocket server
-  - room mapping by `sessionId`
+  - room mapping by `sessionId` and `documentId`
   - authorization check
   - persistence from Yjs updates
   - telemetry derivation from Yjs updates
@@ -206,6 +206,7 @@ Implementation notes:
 - Yjs updates are the source of truth.
 - Persist document snapshots and raw replay evidence without creating a second independent logging path.
 - Redis Streams carries continuous telemetry to the risk engine.
+- Large insert counts are derived from the applied Yjs text delta, not from net document-length changes, so same-length replacements remain observable.
 
 ## Phase 4 - Editor Core
 
@@ -231,6 +232,9 @@ Test-first checks:
 Implementation notes:
 - Clipboard blocking is deterrence, not a security boundary.
 - Atomic insert detection is required because OS-level paste injection may bypass DOM paste events.
+- The candidate editor overrides Monaco's paste action and Ctrl/Cmd+V and Shift+Insert bindings, while the interviewer editor remains unrestricted.
+- A blocked paste sends only an authenticated collaboration marker. The server derives session, participant, document, role, and timestamp before writing the raw Redis event and rolling Postgres aggregate.
+- Monaco content changes are applied incrementally to Yjs so ordinary typing does not appear as a whole-document replacement.
 
 ## Phase 5 - Desktop App
 
@@ -313,7 +317,7 @@ LiveKit room
   -> LiveKit egress recording
   -> MinIO/S3 recording object
   -> Postgres EvidenceObject reference
-  -> RabbitMQ media-analysis job containing object ids only
+  -> RabbitMQ media-analysis job containing a bounded job id and object ids only
   -> apps/media-worker
        -> bounded audio/video sample extraction
        -> VAD / diarization adapter
@@ -336,11 +340,11 @@ Implementation order:
 
 3. Add media-analysis configuration and queue contracts.
    - Use RabbitMQ for discrete media-analysis jobs.
-   - Job payloads must contain `sessionId`, `recordingEvidenceObjectId`, and analysis options only.
+   - Job payloads must contain `jobId`, `sessionId`, `recordingEvidenceObjectId`, and analysis options only.
    - Job payloads must not contain raw media bytes, frame dumps, access credentials, or provider secrets.
 
 4. Add `apps/media-worker`.
-   - The worker reads object references from Postgres and media bytes from S3/MinIO.
+   - The worker reads object references from Postgres and sends bounded object references to the isolated inference service; it does not receive object-storage credentials.
    - The worker runs sample extraction and model adapters off the Express request path.
    - Use injected adapters in tests before adding heavyweight CV/audio runtimes.
 
@@ -381,11 +385,31 @@ Controls enforced by the media worker/runtime:
 - Bounded FFmpeg/sample extraction.
 - Model adapter timeout.
 - No outbound network by default once required models are present locally.
+- Manual RabbitMQ acknowledgement only after durable completion.
+- Confirm-published delayed retries and sanitized dead letters.
+- A 64 KiB queue-payload limit and bounded retry/prefetch settings.
+- Fenced database leases and canonical payload hashes so successful redelivery cannot repeat inference or create duplicate summaries.
 
-Unconfirmed before implementation:
-- Exact server-side CV runtime packaging for MediaPipe Face Landmarker in this repo.
-- Exact VAD/diarization runtime packaging and licenses for production use.
-- Whether the first worker should be Node-only, Python-only, or a small mixed container. Decide after proving the extraction/model adapter tests.
+Implemented inference boundary:
+- `apps/media-inference` is a small Python service because the selected MediaPipe and Silero runtimes are maintained for Python.
+- The service reads only allowlisted MinIO/S3 object references using backend-only credentials, enforces object-size and duration bounds, processes temporary files on bounded container storage, and deletes those files after each request.
+- MediaPipe face detection runs independently sampled frames in stateless image mode and returns sampled-window face counts, condition-support ratios, and detector scores. The worker uses condition support for face-missing/multiple-face thresholds; it does not invent a model probability for absence or carry video timestamps across recordings.
+- Silero VAD returns speech-activity timestamps only. VAD output is not second-speaker evidence and is not mapped to `risk.media.second_voice`.
+- Gaze output remains unavailable because no per-session calibrated gaze runtime exists.
+- Calibration target acknowledgements are stored without raw landmarks and are bound to the active candidate-track recording that produced their future evidence. If that recording ends or is replaced, the calibration is abandoned and must restart against the new recording. This is audit lineage only; it is not a gaze score or risk signal.
+- The internal HTTP client rejects malformed, oversized, timed-out, version-mismatched, and uncalibrated-gaze responses. Object-store credentials are never present in request payloads.
+- The `media-inference` Compose profile publishes no host port, uses an internal network shared with MinIO, runs read-only with bounded temporary storage, drops all capabilities, and applies CPU, memory, and process limits.
+- The `media-worker` Compose profile publishes no port, runs as a non-root user with a read-only filesystem and bounded resources, and uses separate internal-only networks for PostgreSQL/RabbitMQ control traffic and inference RPC.
+- The worker currently wires only the real face-presence adapter. Audio second-voice and gaze requests fail closed because the available VAD runtime is not diarization and the gaze runtime is not calibrated.
+- `media-analysis.jobs.retry` applies a bounded delay before dead-lettering back to the main queue; `media-analysis.jobs.dead` receives invalid, permanent, or retry-exhausted jobs without stack traces or provider secrets.
+
+Still unconfirmed or incomplete:
+- Second-speaker detection requires a separately reviewed diarization model. Silero VAD alone cannot identify speakers.
+- Gaze/off-screen detection requires per-session calibration fixtures and shadow-mode evaluation before risk signals can be emitted.
+- Model accuracy, demographic performance, and operational thresholds require representative evaluation data; package integration tests do not establish production accuracy.
+- Automatic RabbitMQ publication is implemented for recordings stopped through the application: after LiveKit reports `EGRESS_COMPLETE`, the server confirm-publishes one deterministic, bounded `MediaAnalysisJob` referencing the persisted recording evidence. The job requests only the available face-presence detector and contains no raw media, object-store credentials, or unavailable diarization/gaze requests.
+- Recordings that finish independently of the application stop-recording request are covered by `POST /webhooks/livekit`. The route consumes the exact `application/webhook+json` body before Express JSON parsing, verifies LiveKit's signed `Authorization` token and payload hash with the installed server SDK, acknowledges irrelevant or unsuccessful egress events, and publishes only completed recording evidence.
+- LiveKit webhook delivery can be retried or duplicated and is not guaranteed. Both the stop route and webhook use the same deterministic job ID; RabbitMQ redelivery is tolerated by the media worker's durable job-ID and payload-hash idempotency. Production operations must configure the public API webhook URL in LiveKit and monitor repeated `5xx` delivery failures.
 
 Gate:
 - Gaze calibration accuracy test.

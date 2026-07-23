@@ -1,9 +1,12 @@
+import { createHash } from "node:crypto";
+
 import { type PrismaClient } from "@anecites/db";
-import { createRiskSummary } from "@anecites/server";
+import { recordTrustedRiskSignals } from "@anecites/server";
 import {
   MEDIA_ANALYSIS_MODES,
   createMediaAnalysisJob,
   createMediaRiskSignals,
+  getCandidateTrackRecordingParticipantId,
   type MediaAnalysisConfidenceThresholds,
   type MediaAnalysisJob,
   type MediaAnalysisMode,
@@ -12,24 +15,33 @@ import {
   type MediaVideoObservation,
   type RiskSignalInput,
 } from "@anecites/shared";
+import { MediaWorkerError } from "./errors.js";
 
-export type MediaWorkerErrorCode =
-  | "MEDIA_EVIDENCE_NOT_FOUND"
-  | "MEDIA_EVIDENCE_INVALID"
-  | "MEDIA_ADAPTER_UNAVAILABLE"
-  | "MEDIA_ADAPTER_TIMEOUT"
-  | "MEDIA_ADAPTER_FAILED"
-  | "MEDIA_ADAPTER_INVALID_RESPONSE";
+export { MediaWorkerError, type MediaWorkerErrorCode } from "./errors.js";
 
-export class MediaWorkerError extends Error {
-  readonly code: MediaWorkerErrorCode;
+export {
+  MEDIA_ANALYSIS_FAILURE_CODE_HEADER,
+  MEDIA_ANALYSIS_RETRY_COUNT_HEADER,
+  startMediaAnalysisConsumer,
+  type MediaAnalysisConfirmChannel,
+  type MediaAnalysisConsumer,
+  type MediaAnalysisConsumerLogger,
+  type MediaAnalysisMessage,
+  type StartMediaAnalysisConsumerOptions,
+} from "./consumer.js";
 
-  constructor(code: MediaWorkerErrorCode, message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "MediaWorkerError";
-    this.code = code;
-  }
-}
+export { loadMediaWorkerConfig, type MediaWorkerConfig } from "./worker-config.js";
+export { startRecordingVerificationConsumer, type RecordingVerificationConsumer } from "./recording-verification-consumer.js";
+export { markRecordingVerificationFailed, processRecordingVerificationJob } from "./recording-verification.js";
+
+export {
+  createMediaInferenceClient,
+  type MediaInferenceClient,
+  type MediaInferenceClientOptions,
+  type VoiceActivityWindow,
+  type RecordingVerificationRequest,
+  type RecordingVerificationResult,
+} from "./inference-client.js";
 
 export interface MediaAdapterRecordingRequest {
   sessionId: string;
@@ -49,6 +61,7 @@ export interface VideoMediaAdapterRequest extends MediaAdapterRecordingRequest {
 }
 
 export interface MediaWorkerAudioAdapter {
+  mode?: "shadow";
   analyzeSecondVoice(request: MediaAdapterRecordingRequest): Promise<readonly MediaAudioObservation[]>;
 }
 
@@ -72,7 +85,30 @@ export interface ProcessMediaAnalysisJobResult {
   job: MediaAnalysisJob;
   report: MediaRiskSignalReport;
   riskSignals: readonly RiskSignalInput[];
-  riskSummary: Awaited<ReturnType<typeof createRiskSummary>> | null;
+  shadowObservationCounts: Partial<Record<MediaAnalysisMode, number>>;
+  riskSummary: TrustedRiskSummary | null;
+}
+
+export interface ProcessMediaAnalysisQueueJobRequest extends ProcessMediaAnalysisJobRequest {
+  leaseDurationMs: number;
+}
+
+export type ProcessMediaAnalysisQueueJobResult =
+  | {
+      status: "duplicate";
+      job: MediaAnalysisJob;
+    }
+  | ({
+      status: "processed";
+    } & ProcessMediaAnalysisJobResult);
+
+export type AnalyzeMediaAnalysisJobRequest = ProcessMediaAnalysisJobRequest;
+
+export interface AnalyzeMediaAnalysisJobResult {
+  job: MediaAnalysisJob;
+  report: MediaRiskSignalReport;
+  riskSignals: readonly RiskSignalInput[];
+  shadowObservationCounts: Partial<Record<MediaAnalysisMode, number>>;
 }
 
 export interface AudioVoiceSegment {
@@ -88,9 +124,21 @@ export interface SecondVoiceAudioAdapterOptions {
   analyzeVoiceSegments(request: MediaAdapterRecordingRequest): Promise<readonly AudioVoiceSegment[]>;
 }
 
+export interface ShadowSecondVoiceAudioAdapterOptions {
+  adapterVersion: string;
+  minimumSecondVoiceDurationMs?: number;
+  analyzeSpeakerSegments(request: MediaAdapterRecordingRequest): Promise<readonly SpeakerDiarizationAudioSegment[]>;
+}
+
+export interface SpeakerDiarizationAudioSegment {
+  speakerId: string;
+  startedAtMs: number;
+  endedAtMs: number;
+}
+
 export interface VideoAnalysisWindow {
   faceCount: number;
-  faceConfidence: number;
+  conditionSupport: number;
   gazeOffscreenConfidence?: number;
   startedAtMs: number;
   endedAtMs: number;
@@ -110,9 +158,24 @@ const DEFAULT_MINIMUM_FACE_MISSING_DURATION_MS = 3_000;
 const DEFAULT_MINIMUM_MULTIPLE_FACES_DURATION_MS = 1_000;
 const DEFAULT_MINIMUM_GAZE_OFFSCREEN_DURATION_MS = 2_500;
 
+type TrustedRiskSummary = Awaited<ReturnType<typeof recordTrustedRiskSignals>>[number];
+type MediaRiskPersistenceStore = Parameters<typeof recordTrustedRiskSignals>[0];
+
 export async function processMediaAnalysisJob(
   request: ProcessMediaAnalysisJobRequest,
 ): Promise<ProcessMediaAnalysisJobResult> {
+  const analysis = await analyzeMediaAnalysisJob(request);
+  const riskSummary = await persistMediaRiskSignals(request.prisma, analysis);
+
+  return {
+    ...analysis,
+    riskSummary,
+  };
+}
+
+export async function analyzeMediaAnalysisJob(
+  request: AnalyzeMediaAnalysisJobRequest,
+): Promise<AnalyzeMediaAnalysisJobResult> {
   const job = createMediaAnalysisJob(request.job);
   const evidenceObject = await request.prisma.evidenceObject.findUnique({
     where: {
@@ -127,6 +190,15 @@ export async function processMediaAnalysisJob(
   if (evidenceObject.sessionId !== job.sessionId || evidenceObject.kind !== "SESSION_RECORDING") {
     throw new MediaWorkerError("MEDIA_EVIDENCE_INVALID", "Media-analysis job must reference a session recording evidence object");
   }
+
+  if (getCandidateTrackRecordingParticipantId(evidenceObject.metadata) !== job.participantId) {
+    throw new MediaWorkerError(
+      "MEDIA_EVIDENCE_INVALID",
+      "Media-analysis job must reference candidate-scoped recording evidence",
+    );
+  }
+
+  await requireCandidateParticipant(request.prisma, job.sessionId, job.participantId);
 
   const baseAdapterRequest: MediaAdapterRecordingRequest = {
     sessionId: job.sessionId,
@@ -147,6 +219,15 @@ export async function processMediaAnalysisJob(
   if (job.requestedModes.includes(MEDIA_ANALYSIS_MODES.audioSecondVoice)) {
     if (!request.adapters.audio) {
       throw new MediaWorkerError("MEDIA_ADAPTER_UNAVAILABLE", "Audio media adapter is unavailable");
+    }
+    if (
+      !job.options.shadowModes.includes(MEDIA_ANALYSIS_MODES.audioSecondVoice) &&
+      request.adapters.audio.mode === "shadow"
+    ) {
+      throw new MediaWorkerError(
+        "MEDIA_ADAPTER_UNAVAILABLE",
+        "Shadow audio adapter cannot create reviewer risk signals",
+      );
     }
 
     const adapterObservations = await runAdapterWithTimeout(
@@ -178,9 +259,20 @@ export async function processMediaAnalysisJob(
   const report: MediaRiskSignalReport = {
     occurredAt: (request.now?.() ?? new Date()).toISOString(),
     evidenceObjectId: job.recordingEvidenceObjectId,
-    ...(audioObservations.length > 0 ? { audioObservations } : {}),
+    ...(
+      audioObservations.length > 0 && !job.options.shadowModes.includes(MEDIA_ANALYSIS_MODES.audioSecondVoice)
+        ? { audioObservations }
+        : {}
+    ),
     ...(videoObservations.length > 0 ? { videoObservations } : {}),
   };
+  const shadowObservationCounts: Partial<Record<MediaAnalysisMode, number>> = {};
+  if (
+    job.options.shadowModes.includes(MEDIA_ANALYSIS_MODES.audioSecondVoice) &&
+    audioObservations.length > 0
+  ) {
+    shadowObservationCounts[MEDIA_ANALYSIS_MODES.audioSecondVoice] = audioObservations.length;
+  }
 
   let riskSignals: RiskSignalInput[];
   try {
@@ -191,21 +283,171 @@ export async function processMediaAnalysisJob(
     });
   }
 
-  const riskSummary = riskSignals.length > 0
-    ? await createRiskSummary(request.prisma, {
-        sessionId: job.sessionId,
-        evidenceObjectId: job.recordingEvidenceObjectId,
-        signals: riskSignals,
-        ...deriveRiskSummaryWindow(riskSignals, report.occurredAt),
-      })
-    : null;
-
   return {
     job,
     report,
     riskSignals,
+    shadowObservationCounts,
+  };
+}
+
+export async function processMediaAnalysisQueueJob(
+  request: ProcessMediaAnalysisQueueJobRequest,
+): Promise<ProcessMediaAnalysisQueueJobResult> {
+  const job = createMediaAnalysisJob(request.job);
+  const leaseDurationMs = requireBoundedInteger("leaseDurationMs", request.leaseDurationMs, 1_000, 3_600_000);
+  const payloadSha256 = createHash("sha256").update(JSON.stringify(job)).digest("hex");
+  const lockedAt = request.now?.() ?? new Date();
+  const staleBefore = new Date(lockedAt.getTime() - leaseDurationMs);
+  const existingRun = await request.prisma.mediaAnalysisJobRun.upsert({
+    where: { jobId: job.jobId },
+    create: {
+      jobId: job.jobId,
+      payloadSha256,
+      sessionId: job.sessionId,
+      recordingEvidenceObjectId: job.recordingEvidenceObjectId,
+    },
+    update: {},
+  });
+
+  if (
+    existingRun.payloadSha256 !== payloadSha256 ||
+    existingRun.sessionId !== job.sessionId ||
+    existingRun.recordingEvidenceObjectId !== job.recordingEvidenceObjectId
+  ) {
+    throw new MediaWorkerError("MEDIA_JOB_CONFLICT", "Media-analysis job id was reused for different evidence");
+  }
+  if (existingRun.status === "SUCCEEDED") {
+    return { status: "duplicate", job };
+  }
+
+  const claimed = await request.prisma.mediaAnalysisJobRun.updateMany({
+    where: {
+      jobId: job.jobId,
+      leaseVersion: existingRun.leaseVersion,
+      OR: [
+        { status: "PENDING" },
+        { status: "PROCESSING", lockedAt: { lte: staleBefore } },
+      ],
+    },
+    data: {
+      status: "PROCESSING",
+      lockedAt,
+      leaseVersion: { increment: 1 },
+    },
+  });
+
+  if (claimed.count !== 1) {
+    const latestRun = await request.prisma.mediaAnalysisJobRun.findUnique({
+      where: { jobId: job.jobId },
+      select: { status: true },
+    });
+    if (latestRun?.status === "SUCCEEDED") {
+      return { status: "duplicate", job };
+    }
+    throw new MediaWorkerError("MEDIA_JOB_BUSY", "Media-analysis job is already being processed");
+  }
+
+  const leaseVersion = existingRun.leaseVersion + 1;
+  let analysis: AnalyzeMediaAnalysisJobResult;
+  try {
+    analysis = await analyzeMediaAnalysisJob({
+      ...request,
+      job,
+    });
+  } catch (error) {
+    await releaseMediaAnalysisJobLease(request.prisma, job.jobId, leaseVersion);
+    throw error;
+  }
+
+  let riskSummary: TrustedRiskSummary | null = null;
+  await request.prisma.$transaction(async (transaction) => {
+    riskSummary = await persistMediaRiskSignals(transaction, analysis);
+
+    const completed = await transaction.mediaAnalysisJobRun.updateMany({
+      where: {
+        jobId: job.jobId,
+        status: "PROCESSING",
+        leaseVersion,
+      },
+      data: {
+        status: "SUCCEEDED",
+        completedAt: request.now?.() ?? new Date(),
+        lockedAt: null,
+        riskSummaryId: riskSummary?.id ?? null,
+      },
+    });
+    if (completed.count !== 1) {
+      throw new MediaWorkerError("MEDIA_JOB_LEASE_LOST", "Media-analysis job lease was lost before completion");
+    }
+  });
+
+  return {
+    status: "processed",
+    ...analysis,
     riskSummary,
   };
+}
+
+async function persistMediaRiskSignals(
+  prisma: MediaRiskPersistenceStore,
+  analysis: AnalyzeMediaAnalysisJobResult,
+): Promise<TrustedRiskSummary | null> {
+  if (analysis.riskSignals.length === 0) {
+    return null;
+  }
+  await requireCandidateParticipant(prisma, analysis.job.sessionId, analysis.job.participantId);
+  const summaries = await recordTrustedRiskSignals(prisma, {
+    sessionId: analysis.job.sessionId,
+    participantId: analysis.job.participantId,
+    source: "MEDIA_WORKER",
+    detectorVersion: "anecites-media-worker-v1",
+    signals: analysis.riskSignals,
+  });
+  return summaries
+    .slice()
+    .sort((left, right) => right.score - left.score || left.windowStartedAt.localeCompare(right.windowStartedAt))[0] ?? null;
+}
+
+async function requireCandidateParticipant(
+  prisma: Pick<PrismaClient, "participant">,
+  sessionId: string,
+  participantId: string,
+): Promise<void> {
+  const participant = await prisma.participant.findFirst({
+    where: {
+      id: participantId,
+      sessionId,
+      role: "CANDIDATE",
+    },
+    select: {
+      id: true,
+    },
+  });
+  if (!participant) {
+    throw new MediaWorkerError(
+      "MEDIA_PARTICIPANT_INVALID",
+      "Media-analysis job must reference a candidate participant in the same session",
+    );
+  }
+}
+
+async function releaseMediaAnalysisJobLease(
+  prisma: PrismaClient,
+  jobId: string,
+  leaseVersion: number,
+): Promise<void> {
+  await prisma.mediaAnalysisJobRun.updateMany({
+    where: {
+      jobId,
+      status: "PROCESSING",
+      leaseVersion,
+    },
+    data: {
+      status: "PENDING",
+      lockedAt: null,
+    },
+  });
 }
 
 export function createSecondVoiceAudioAdapter(
@@ -288,6 +530,73 @@ export function createSecondVoiceAudioAdapter(
   };
 }
 
+export function createShadowSecondVoiceAudioAdapter(
+  options: ShadowSecondVoiceAudioAdapterOptions,
+): MediaWorkerAudioAdapter {
+  const adapterVersion = requireNonEmptyString("adapterVersion", options.adapterVersion);
+  const minimumSecondVoiceDurationMs = requireBoundedInteger(
+    "minimumSecondVoiceDurationMs",
+    options.minimumSecondVoiceDurationMs ?? DEFAULT_MINIMUM_SECOND_VOICE_DURATION_MS,
+    1,
+    60_000,
+  );
+
+  return {
+    mode: "shadow",
+    async analyzeSecondVoice(request) {
+      const segments = await options.analyzeSpeakerSegments(request);
+      if (!Array.isArray(segments)) {
+        throw new MediaWorkerError("MEDIA_ADAPTER_INVALID_RESPONSE", "Speaker diarization response must be an array");
+      }
+
+      const speakerTotals = new Map<
+        string,
+        {
+          durationMs: number;
+          startedAtMs: number;
+          endedAtMs: number;
+        }
+      >();
+
+      for (const segment of segments.map(normalizeSpeakerDiarizationSegment)) {
+        const durationMs = segment.endedAtMs - segment.startedAtMs;
+        const current = speakerTotals.get(segment.speakerId) ?? {
+          durationMs: 0,
+          startedAtMs: segment.startedAtMs,
+          endedAtMs: segment.endedAtMs,
+        };
+        current.durationMs += durationMs;
+        current.startedAtMs = Math.min(current.startedAtMs, segment.startedAtMs);
+        current.endedAtMs = Math.max(current.endedAtMs, segment.endedAtMs);
+        speakerTotals.set(segment.speakerId, current);
+      }
+
+      const qualifiedSpeakers = [...speakerTotals.values()]
+        .filter((speaker) => speaker.durationMs >= minimumSecondVoiceDurationMs)
+        .sort((left, right) => right.durationMs - left.durationMs);
+      if (qualifiedSpeakers.length < 2) {
+        return [];
+      }
+
+      const secondVoiceSpeaker = qualifiedSpeakers[1];
+      if (!secondVoiceSpeaker) {
+        return [];
+      }
+
+      return [{
+        kind: "second_voice",
+        // Shadow mode has no calibrated confidence and is never converted to a risk signal.
+        confidence: 0,
+        durationMs: secondVoiceSpeaker.durationMs,
+        sampleStartedAt: new Date(secondVoiceSpeaker.startedAtMs).toISOString(),
+        sampleEndedAt: new Date(secondVoiceSpeaker.endedAtMs).toISOString(),
+        adapterVersion,
+        speakerCount: qualifiedSpeakers.length,
+      }];
+    },
+  };
+}
+
 export function createVideoAnalysisAdapter(options: VideoAnalysisAdapterOptions): MediaWorkerVideoAdapter {
   const adapterVersion = requireNonEmptyString("adapterVersion", options.adapterVersion);
   const calibrationId = options.calibrationId
@@ -332,12 +641,12 @@ export function createVideoAnalysisAdapter(options: VideoAnalysisAdapterOptions)
         if (
           facePresenceRequested &&
           window.faceCount === 0 &&
-          window.faceConfidence >= request.confidenceThresholds.faceMissing &&
+          window.conditionSupport >= request.confidenceThresholds.faceMissing &&
           durationMs >= minimumFaceMissingDurationMs
         ) {
           observations.push({
             kind: "face_missing",
-            confidence: window.faceConfidence,
+            confidence: window.conditionSupport,
             durationMs,
             sampleStartedAt,
             sampleEndedAt,
@@ -349,12 +658,12 @@ export function createVideoAnalysisAdapter(options: VideoAnalysisAdapterOptions)
         if (
           facePresenceRequested &&
           window.faceCount >= 2 &&
-          window.faceConfidence >= request.confidenceThresholds.multipleFaces &&
+          window.conditionSupport >= request.confidenceThresholds.multipleFaces &&
           durationMs >= minimumMultipleFacesDurationMs
         ) {
           observations.push({
             kind: "multiple_faces",
-            confidence: window.faceConfidence,
+            confidence: window.conditionSupport,
             durationMs,
             sampleStartedAt,
             sampleEndedAt,
@@ -468,13 +777,30 @@ function normalizeVoiceSegment(segment: AudioVoiceSegment): AudioVoiceSegment {
   };
 }
 
+function normalizeSpeakerDiarizationSegment(
+  segment: SpeakerDiarizationAudioSegment,
+): SpeakerDiarizationAudioSegment {
+  if (!isRecord(segment)) {
+    throw new Error("Speaker diarization segment must be an object");
+  }
+
+  const speakerId = requireNonEmptyString("speakerId", segment.speakerId);
+  const startedAtMs = requireNonNegativeInteger("startedAtMs", segment.startedAtMs);
+  const endedAtMs = requireNonNegativeInteger("endedAtMs", segment.endedAtMs);
+  if (endedAtMs <= startedAtMs) {
+    throw new Error("endedAtMs must be greater than startedAtMs");
+  }
+
+  return { speakerId, startedAtMs, endedAtMs };
+}
+
 function normalizeVideoWindow(window: VideoAnalysisWindow): VideoAnalysisWindow {
   if (!isRecord(window)) {
     throw new Error("Video analysis window must be an object");
   }
 
   const faceCount = requireNonNegativeInteger("faceCount", window.faceCount);
-  const faceConfidence = requireConfidence("faceConfidence", window.faceConfidence);
+  const conditionSupport = requireConfidence("conditionSupport", window.conditionSupport);
   const gazeOffscreenConfidence = window.gazeOffscreenConfidence === undefined
     ? undefined
     : requireConfidence("gazeOffscreenConfidence", window.gazeOffscreenConfidence);
@@ -487,7 +813,7 @@ function normalizeVideoWindow(window: VideoAnalysisWindow): VideoAnalysisWindow 
 
   return {
     faceCount,
-    faceConfidence,
+    conditionSupport,
     ...(gazeOffscreenConfidence === undefined ? {} : { gazeOffscreenConfidence }),
     startedAtMs,
     endedAtMs,
@@ -543,7 +869,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function deriveRiskSummaryWindow(
+export function deriveRiskSummaryWindow(
   riskSignals: readonly RiskSignalInput[],
   fallbackOccurredAt: string,
 ): { windowStartedAt: string; windowEndedAt: string } {

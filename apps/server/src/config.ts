@@ -1,6 +1,14 @@
+import {
+  createNativeApplicationDetectionRules,
+  type NativeApplicationDetectionRule,
+} from "@anecites/shared";
+import { createHash, createPrivateKey } from "node:crypto";
+
 export type NodeEnv = "development" | "test" | "production";
 export type CodeExecutionProviderName = "piston" | "judge0";
 export type Judge0Provider = "self-hosted";
+export type MediaAnalysisSecondVoiceMode = "disabled" | "shadow";
+export type MediaAnalysisGazeMode = "disabled" | "shadow";
 
 export interface ServerConfig {
   nodeEnv: NodeEnv;
@@ -17,11 +25,21 @@ export interface ServerConfig {
   replayRetentionDays: number;
   telemetryRetentionDays: number;
   riskSummaryRetentionDays: number;
+  monitoringProhibitedApplicationRules: readonly NativeApplicationDetectionRule[];
+  monitoringPolicyVersion: string;
+  monitoringPolicySigningKeyId: string | null;
+  monitoringPolicySigningPrivateKeyPkcs8Base64: string | null;
   mediaAnalysisEnabled: boolean;
+  mediaConsentNoticeVersion: string;
+  mediaConsentNoticeText: string;
+  mediaConsentNoticeFingerprint: string;
   mediaAnalysisQueueName: string;
   mediaAnalysisSampleWindowMs: number;
   mediaAnalysisMaxSamplesPerRecording: number;
   mediaAnalysisRequestTimeoutMs: number;
+  mediaAnalysisSecondVoiceMode: MediaAnalysisSecondVoiceMode;
+  mediaAnalysisGazeMode: MediaAnalysisGazeMode;
+  mediaAnalysisShadowQueueName: string;
   mediaAnalysisSecondVoiceConfidenceThreshold: number;
   mediaAnalysisFaceMissingConfidenceThreshold: number;
   mediaAnalysisMultipleFacesConfidenceThreshold: number;
@@ -50,6 +68,18 @@ export interface ServerConfig {
   livekitApiKey: string | null;
   livekitApiSecret: string | null;
   livekitTokenTtlSeconds: number;
+  objectStorageEndpoint: string | null;
+  objectStorageBucket: string | null;
+  objectStorageAccessKeyId: string | null;
+  objectStorageSecretAccessKey: string | null;
+  objectStorageRegion: string;
+  objectStorageForcePathStyle: boolean;
+  recordingStorageKeyPrefix: string;
+  evidenceSignedUrlTtlSeconds: number;
+  recordingVerificationQueueName: string;
+  recordingCompletenessAbsoluteToleranceMs: number;
+  recordingCompletenessRelativeTolerancePercent: number;
+  recordingVerificationTimeoutMs: number;
   livekitRecordingS3Endpoint: string | null;
   livekitRecordingS3Bucket: string | null;
   livekitRecordingS3AccessKeyId: string | null;
@@ -57,14 +87,19 @@ export interface ServerConfig {
   livekitRecordingS3Region: string;
   livekitRecordingS3ForcePathStyle: boolean;
   livekitRecordingKeyPrefix: string;
+  livekitRecordingAutoLifecycleEnabled: boolean;
 }
 
 type EnvironmentInput = Record<string, string | undefined>;
 
 const NODE_ENVS = new Set(["development", "test", "production"]);
 const CODE_EXECUTION_PROVIDERS = new Set(["piston", "judge0"]);
+const MEDIA_ANALYSIS_SECOND_VOICE_MODES = new Set(["disabled", "shadow"]);
+const MEDIA_ANALYSIS_GAZE_MODES = new Set(["disabled", "shadow"]);
 const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const QUEUE_NAME_PATTERN = /^[A-Za-z0-9._:-]+$/;
+const DEVELOPMENT_MEDIA_CONSENT_NOTICE_TEXT =
+  "Development-only notice: recording and optional media analysis are for local testing only and are not a production consent notice.";
 
 export function loadServerConfig(env: EnvironmentInput = process.env): ServerConfig {
   const nodeEnv = parseNodeEnv(env.NODE_ENV);
@@ -79,6 +114,27 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
   const livekitTokenTtlSeconds = parsePositiveInteger("LIVEKIT_TOKEN_TTL_SECONDS", env.LIVEKIT_TOKEN_TTL_SECONDS, 3_600, 86_400);
   const livekitUrl = parseOptionalUrl("LIVEKIT_URL", env.LIVEKIT_URL);
   const livekitApiUrl = parseOptionalUrl("LIVEKIT_API_URL", env.LIVEKIT_API_URL) ?? deriveLiveKitApiUrl(livekitUrl);
+  const livekitApiKey = parseOptionalString(env.LIVEKIT_API_KEY);
+  const livekitApiSecret = parseOptionalString(env.LIVEKIT_API_SECRET);
+  const livekitRecordingS3Endpoint = parseOptionalUrl(
+    "LIVEKIT_RECORDING_S3_ENDPOINT",
+    env.LIVEKIT_RECORDING_S3_ENDPOINT,
+  );
+  const objectStorageEndpoint = parseOptionalUrl("S3_ENDPOINT", env.S3_ENDPOINT) ?? livekitRecordingS3Endpoint;
+  const objectStorageBucket = parseOptionalString(env.S3_BUCKET);
+  const objectStorageAccessKeyId = parseOptionalString(env.S3_ACCESS_KEY_ID);
+  const objectStorageSecretAccessKey = parseOptionalString(env.S3_SECRET_ACCESS_KEY);
+  const objectStorageRegion = parseOptionalString(env.S3_REGION) ?? "us-east-1";
+  const objectStorageForcePathStyle = parseBoolean("S3_FORCE_PATH_STYLE", env.S3_FORCE_PATH_STYLE, true);
+  const recordingStorageKeyPrefix = parseStorageKeyPrefix(
+    env.RECORDING_STORAGE_KEY_PREFIX ?? env.LIVEKIT_RECORDING_KEY_PREFIX,
+    "recordings/livekit",
+  );
+  const livekitRecordingAutoLifecycleEnabled = parseBoolean(
+    "LIVEKIT_RECORDING_AUTO_LIFECYCLE_ENABLED",
+    env.LIVEKIT_RECORDING_AUTO_LIFECYCLE_ENABLED,
+    false,
+  );
   const codeExecutionAllowedLanguageIds = parseRequiredPositiveIntegerList(
     "CODE_EXECUTION_ALLOWED_LANGUAGE_IDS",
     env.CODE_EXECUTION_ALLOWED_LANGUAGE_IDS ?? env.JUDGE0_ALLOWED_LANGUAGE_IDS,
@@ -95,6 +151,45 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
     5,
     30,
   );
+  const monitoringProhibitedApplicationRules = parseMonitoringProhibitedApplicationRules(
+    env.MONITORING_PROHIBITED_APPLICATION_RULES_JSON,
+  );
+  const monitoringPolicySigningKeyId = parseOptionalString(env.MONITORING_POLICY_SIGNING_KEY_ID);
+  const monitoringPolicySigningPrivateKeyPkcs8Base64 = parseOptionalEd25519PrivateKey(
+    env.MONITORING_POLICY_SIGNING_PRIVATE_KEY_PKCS8_BASE64,
+  );
+  const mediaAnalysisEnabled = parseBoolean("MEDIA_ANALYSIS_ENABLED", env.MEDIA_ANALYSIS_ENABLED, false);
+  const mediaAnalysisSecondVoiceMode = parseMediaAnalysisSecondVoiceMode(
+    env.MEDIA_ANALYSIS_SECOND_VOICE_MODE,
+  );
+  const mediaAnalysisGazeMode = parseMediaAnalysisGazeMode(env.MEDIA_ANALYSIS_GAZE_MODE);
+  if (!mediaAnalysisEnabled && mediaAnalysisGazeMode === "shadow") {
+    throw new Error("MEDIA_ANALYSIS_GAZE_MODE=shadow requires MEDIA_ANALYSIS_ENABLED=true");
+  }
+  const mediaAnalysisQueueName = parseQueueName(env.MEDIA_ANALYSIS_QUEUE_NAME, "media-analysis.jobs");
+  const mediaAnalysisShadowQueueName = parseQueueName(
+    env.MEDIA_ANALYSIS_SHADOW_QUEUE_NAME,
+    "media-analysis.shadow.v1.jobs",
+  );
+  if (mediaAnalysisQueueName === mediaAnalysisShadowQueueName) {
+    throw new Error("MEDIA_ANALYSIS_SHADOW_QUEUE_NAME must differ from MEDIA_ANALYSIS_QUEUE_NAME");
+  }
+  const mediaConsentNoticeVersion = parseMediaConsentNoticeVersion(env.MEDIA_CONSENT_NOTICE_VERSION);
+  const mediaConsentNoticeText = parseMediaConsentNoticeText(nodeEnv, env.MEDIA_CONSENT_NOTICE_TEXT);
+  const mediaConsentNoticeFingerprint = createNoticeFingerprint(mediaConsentNoticeText);
+  if (Boolean(monitoringPolicySigningKeyId) !== Boolean(monitoringPolicySigningPrivateKeyPkcs8Base64)) {
+    throw new Error("MONITORING_POLICY_SIGNING_KEY_ID and MONITORING_POLICY_SIGNING_PRIVATE_KEY_PKCS8_BASE64 must be configured together");
+  }
+  if (
+    nodeEnv === "production" &&
+    monitoringProhibitedApplicationRules.length > 0 &&
+    !monitoringPolicySigningPrivateKeyPkcs8Base64
+  ) {
+    throw new Error("A signed monitoring policy is required when prohibited application rules are enabled in production");
+  }
+  if (nodeEnv === "production" && !env.MEDIA_CONSENT_NOTICE_VERSION?.trim()) {
+    throw new Error("MEDIA_CONSENT_NOTICE_VERSION is required in production");
+  }
 
   if (codeExecutionWallTimeLimitSeconds < codeExecutionCpuTimeLimitSeconds) {
     throw new Error(
@@ -108,6 +203,21 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
 
   if (localDemoPublicBaseUrl && !localDemoEnabled) {
     throw new Error("LOCAL_DEMO_PUBLIC_BASE_URL requires LOCAL_DEMO_ENABLED=true");
+  }
+
+  if (
+    livekitRecordingAutoLifecycleEnabled &&
+    (!livekitApiUrl ||
+      !livekitApiKey ||
+      !livekitApiSecret ||
+      !livekitRecordingS3Endpoint ||
+      !objectStorageBucket ||
+      !objectStorageAccessKeyId ||
+      !objectStorageSecretAccessKey)
+  ) {
+    throw new Error(
+      "LIVEKIT_RECORDING_AUTO_LIFECYCLE_ENABLED requires configured LiveKit credentials and recording storage",
+    );
   }
 
   return {
@@ -130,8 +240,15 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
       365,
       3_650,
     ),
-    mediaAnalysisEnabled: parseBoolean("MEDIA_ANALYSIS_ENABLED", env.MEDIA_ANALYSIS_ENABLED, false),
-    mediaAnalysisQueueName: parseQueueName(env.MEDIA_ANALYSIS_QUEUE_NAME, "media-analysis.jobs"),
+    monitoringProhibitedApplicationRules,
+    monitoringPolicyVersion: parsePolicyVersion(env.MONITORING_POLICY_VERSION),
+    monitoringPolicySigningKeyId,
+    monitoringPolicySigningPrivateKeyPkcs8Base64,
+    mediaAnalysisEnabled,
+    mediaConsentNoticeVersion,
+    mediaConsentNoticeText,
+    mediaConsentNoticeFingerprint,
+    mediaAnalysisQueueName,
     mediaAnalysisSampleWindowMs: parsePositiveInteger(
       "MEDIA_ANALYSIS_SAMPLE_WINDOW_MS",
       env.MEDIA_ANALYSIS_SAMPLE_WINDOW_MS,
@@ -150,6 +267,9 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
       30_000,
       300_000,
     ),
+    mediaAnalysisSecondVoiceMode,
+    mediaAnalysisGazeMode,
+    mediaAnalysisShadowQueueName,
     mediaAnalysisSecondVoiceConfidenceThreshold: parseConfidenceThreshold(
       "MEDIA_ANALYSIS_SECOND_VOICE_CONFIDENCE_THRESHOLD",
       env.MEDIA_ANALYSIS_SECOND_VOICE_CONFIDENCE_THRESHOLD,
@@ -201,19 +321,56 @@ export function loadServerConfig(env: EnvironmentInput = process.env): ServerCon
     ),
     livekitUrl,
     livekitApiUrl,
-    livekitApiKey: parseOptionalString(env.LIVEKIT_API_KEY),
-    livekitApiSecret: parseOptionalString(env.LIVEKIT_API_SECRET),
+    livekitApiKey,
+    livekitApiSecret,
     livekitTokenTtlSeconds,
-    livekitRecordingS3Endpoint: parseOptionalUrl(
-      "LIVEKIT_RECORDING_S3_ENDPOINT",
-      env.LIVEKIT_RECORDING_S3_ENDPOINT,
-    ) ?? parseOptionalUrl("S3_ENDPOINT", env.S3_ENDPOINT),
-    livekitRecordingS3Bucket: parseOptionalString(env.S3_BUCKET),
-    livekitRecordingS3AccessKeyId: parseOptionalString(env.S3_ACCESS_KEY_ID),
-    livekitRecordingS3SecretAccessKey: parseOptionalString(env.S3_SECRET_ACCESS_KEY),
-    livekitRecordingS3Region: parseOptionalString(env.S3_REGION) ?? "us-east-1",
-    livekitRecordingS3ForcePathStyle: parseBoolean("S3_FORCE_PATH_STYLE", env.S3_FORCE_PATH_STYLE, true),
-    livekitRecordingKeyPrefix: parseStorageKeyPrefix(env.LIVEKIT_RECORDING_KEY_PREFIX, "recordings/livekit"),
+    objectStorageEndpoint,
+    objectStorageBucket,
+    objectStorageAccessKeyId,
+    objectStorageSecretAccessKey,
+    objectStorageRegion,
+    objectStorageForcePathStyle,
+    recordingStorageKeyPrefix,
+    evidenceSignedUrlTtlSeconds: parseBoundedPositiveInteger(
+      "EVIDENCE_SIGNED_URL_TTL_SECONDS",
+      env.EVIDENCE_SIGNED_URL_TTL_SECONDS,
+      900,
+      60,
+      3_600,
+    ),
+    recordingVerificationQueueName: parseQueueName(
+      env.RECORDING_VERIFICATION_QUEUE_NAME,
+      "recording-verification.jobs",
+    ),
+    recordingCompletenessAbsoluteToleranceMs: parseBoundedPositiveInteger(
+      "RECORDING_COMPLETENESS_ABSOLUTE_TOLERANCE_MS",
+      env.RECORDING_COMPLETENESS_ABSOLUTE_TOLERANCE_MS,
+      5_000,
+      100,
+      300_000,
+    ),
+    recordingCompletenessRelativeTolerancePercent: parseBoundedPositiveNumber(
+      "RECORDING_COMPLETENESS_RELATIVE_TOLERANCE_PERCENT",
+      env.RECORDING_COMPLETENESS_RELATIVE_TOLERANCE_PERCENT,
+      2,
+      0.01,
+      100,
+    ),
+    recordingVerificationTimeoutMs: parseBoundedPositiveInteger(
+      "RECORDING_VERIFICATION_TIMEOUT_MS",
+      env.RECORDING_VERIFICATION_TIMEOUT_MS,
+      30_000,
+      1_000,
+      600_000,
+    ),
+    livekitRecordingS3Endpoint,
+    livekitRecordingS3Bucket: objectStorageBucket,
+    livekitRecordingS3AccessKeyId: objectStorageAccessKeyId,
+    livekitRecordingS3SecretAccessKey: objectStorageSecretAccessKey,
+    livekitRecordingS3Region: objectStorageRegion,
+    livekitRecordingS3ForcePathStyle: objectStorageForcePathStyle,
+    livekitRecordingKeyPrefix: recordingStorageKeyPrefix,
+    livekitRecordingAutoLifecycleEnabled,
   };
 }
 
@@ -357,6 +514,22 @@ function parseQueueName(value: string | undefined, defaultValue: string): string
   return queueName;
 }
 
+function parseMediaAnalysisSecondVoiceMode(value: string | undefined): MediaAnalysisSecondVoiceMode {
+  const mode = value?.trim() || "disabled";
+  if (!MEDIA_ANALYSIS_SECOND_VOICE_MODES.has(mode)) {
+    throw new Error("MEDIA_ANALYSIS_SECOND_VOICE_MODE must be one of: disabled, shadow");
+  }
+  return mode as MediaAnalysisSecondVoiceMode;
+}
+
+function parseMediaAnalysisGazeMode(value: string | undefined): MediaAnalysisGazeMode {
+  const mode = value?.trim() || "disabled";
+  if (!MEDIA_ANALYSIS_GAZE_MODES.has(mode)) {
+    throw new Error("MEDIA_ANALYSIS_GAZE_MODE must be one of: disabled, shadow");
+  }
+  return mode as MediaAnalysisGazeMode;
+}
+
 function parseOptionalHeaderName(value: string | undefined): string | null {
   const trimmed = value?.trim();
   if (!trimmed) {
@@ -420,4 +593,109 @@ function parsePositiveInteger(fieldName: string, value: string | undefined, defa
   }
 
   return parsed;
+}
+
+function parseBoundedPositiveInteger(
+  fieldName: string,
+  value: string | undefined,
+  defaultValue: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const parsed = parsePositiveInteger(fieldName, value, defaultValue, maximum);
+  if (parsed < minimum) {
+    throw new Error(`${fieldName} must be at least ${minimum}`);
+  }
+  return parsed;
+}
+
+function parseBoundedPositiveNumber(
+  fieldName: string,
+  value: string | undefined,
+  defaultValue: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const parsed = parsePositiveNumber(fieldName, value, defaultValue, maximum);
+  if (parsed < minimum) {
+    throw new Error(`${fieldName} must be at least ${minimum}`);
+  }
+  return parsed;
+}
+
+function parseMonitoringProhibitedApplicationRules(value: string | undefined): NativeApplicationDetectionRule[] {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    throw new Error("MONITORING_PROHIBITED_APPLICATION_RULES_JSON must be valid JSON");
+  }
+
+  try {
+    return createNativeApplicationDetectionRules(parsed);
+  } catch (error) {
+    throw new Error(
+      `MONITORING_PROHIBITED_APPLICATION_RULES_JSON is invalid: ${error instanceof Error ? error.message : "invalid rule policy"}`,
+    );
+  }
+}
+
+function parsePolicyVersion(value: string | undefined): string {
+  const version = value?.trim() || "2026-07-17.1";
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(version)) {
+    throw new Error("MONITORING_POLICY_VERSION must contain only letters, numbers, dots, underscores, or hyphens");
+  }
+  return version;
+}
+
+function parseMediaConsentNoticeVersion(value: string | undefined): string {
+  const version = value?.trim() || "development-v1";
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(version)) {
+    throw new Error("MEDIA_CONSENT_NOTICE_VERSION must contain only letters, numbers, dots, underscores, or hyphens");
+  }
+  return version;
+}
+
+function parseMediaConsentNoticeText(nodeEnv: NodeEnv, value: string | undefined): string {
+  const text = value?.trim() || (nodeEnv === "production" ? "" : DEVELOPMENT_MEDIA_CONSENT_NOTICE_TEXT);
+
+  if (!text) {
+    throw new Error("MEDIA_CONSENT_NOTICE_TEXT is required in production");
+  }
+
+  if (text.length > 4_000) {
+    throw new Error("MEDIA_CONSENT_NOTICE_TEXT must contain at most 4000 characters");
+  }
+
+  if (text.includes("\u0000")) {
+    throw new Error("MEDIA_CONSENT_NOTICE_TEXT must not contain null characters");
+  }
+
+  return text;
+}
+
+function createNoticeFingerprint(noticeText: string): string {
+  return createHash("sha256").update(noticeText, "utf8").digest("hex");
+}
+
+function parseOptionalEd25519PrivateKey(value: string | undefined): string | null {
+  const encoded = parseOptionalString(value);
+  if (!encoded) {
+    return null;
+  }
+  let key;
+  try {
+    key = createPrivateKey({ key: Buffer.from(encoded, "base64"), format: "der", type: "pkcs8" });
+  } catch {
+    throw new Error("MONITORING_POLICY_SIGNING_PRIVATE_KEY_PKCS8_BASE64 must be a valid PKCS#8 key");
+  }
+  if (key.asymmetricKeyType !== "ed25519") {
+    throw new Error("MONITORING_POLICY_SIGNING_PRIVATE_KEY_PKCS8_BASE64 must contain an Ed25519 key");
+  }
+  return encoded;
 }

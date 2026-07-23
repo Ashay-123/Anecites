@@ -31,10 +31,17 @@ test("processMediaAnalysisJob loads recording evidence and sends bounded request
         },
       },
     });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          contains: testRunId,
+        },
+      },
+    });
     await prisma.$disconnect();
   });
 
-  const { session, evidence } = await createRecordingEvidence(prisma, "bounded");
+  const { session, evidence, candidateParticipant } = await createRecordingEvidence(prisma, "bounded");
   const audioRequests = [];
   const videoRequests = [];
   const adapters = {
@@ -74,7 +81,9 @@ test("processMediaAnalysisJob loads recording evidence and sends bounded request
   };
 
   const job = createMediaAnalysisJob({
+    jobId: `${testRunId}-bounded`,
     sessionId: session.id,
+    participantId: candidateParticipant.id,
     recordingEvidenceObjectId: evidence.id,
     requestedModes: [
       MEDIA_ANALYSIS_MODES.audioSecondVoice,
@@ -136,6 +145,71 @@ test("processMediaAnalysisJob loads recording evidence and sends bounded request
   assert.equal(JSON.stringify(result).includes("rawFrame"), false);
 });
 
+test("processMediaAnalysisJob keeps shadow second-voice observations out of reviewer risk signals", async () => {
+  const job = createMediaAnalysisJob({
+    jobId: `${testRunId}-shadow-second-voice`,
+    sessionId: "session-shadow-1",
+    participantId: "candidate-shadow-1",
+    recordingEvidenceObjectId: "recording-shadow-1",
+    requestedModes: [MEDIA_ANALYSIS_MODES.audioSecondVoice],
+    options: {
+      ...validOptions(),
+      shadowModes: [MEDIA_ANALYSIS_MODES.audioSecondVoice],
+    },
+  });
+  const result = await processMediaAnalysisJob({
+    prisma: {
+      evidenceObject: {
+        async findUnique() {
+          return {
+            id: "recording-shadow-1",
+            sessionId: "session-shadow-1",
+            kind: "SESSION_RECORDING",
+            storageBucket: "anecites-dev",
+            storageKey: "recordings/shadow.mp4",
+            contentType: "video/mp4",
+            durationMs: 60_000,
+            metadata: {
+              livekit: {
+                recordingScope: "candidate_track",
+                participantId: "candidate-shadow-1",
+              },
+            },
+          };
+        },
+      },
+      participant: {
+        async findFirst() {
+          return { id: "candidate-shadow-1" };
+        },
+      },
+    },
+    job,
+    adapters: {
+      audio: {
+        async analyzeSecondVoice() {
+          return [{
+            kind: "second_voice",
+            confidence: 0.91,
+            durationMs: 4_100,
+            sampleStartedAt: "2026-07-18T00:00:00.000Z",
+            sampleEndedAt: "2026-07-18T00:00:04.100Z",
+            adapterVersion: "test-audio-v1",
+            speakerCount: 2,
+          }];
+        },
+      },
+    },
+    now: () => new Date("2026-07-18T00:01:00.000Z"),
+  });
+
+  assert.deepEqual(result.report.audioObservations ?? [], []);
+  assert.deepEqual(result.riskSignals, []);
+  assert.deepEqual(result.shadowObservationCounts, {
+    [MEDIA_ANALYSIS_MODES.audioSecondVoice]: 1,
+  });
+});
+
 test("processMediaAnalysisJob rejects missing or wrong-kind recording evidence", async (t) => {
   const prisma = createPrismaClient({
     datasources: {
@@ -152,16 +226,25 @@ test("processMediaAnalysisJob rejects missing or wrong-kind recording evidence",
         },
       },
     });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          contains: testRunId,
+        },
+      },
+    });
     await prisma.$disconnect();
   });
 
-  const { session } = await createRecordingEvidence(prisma, "missing");
+  const { session, candidateParticipant } = await createRecordingEvidence(prisma, "missing");
   await assert.rejects(
     () =>
       processMediaAnalysisJob({
         prisma,
         job: createMediaAnalysisJob({
+          jobId: `${testRunId}-missing`,
           sessionId: session.id,
+          participantId: candidateParticipant.id,
           recordingEvidenceObjectId: "missing-evidence",
           requestedModes: [MEDIA_ANALYSIS_MODES.audioSecondVoice],
           options: validOptions(),
@@ -186,7 +269,9 @@ test("processMediaAnalysisJob rejects missing or wrong-kind recording evidence",
       processMediaAnalysisJob({
         prisma,
         job: createMediaAnalysisJob({
+          jobId: `${testRunId}-wrong-kind`,
           sessionId: session.id,
+          participantId: candidateParticipant.id,
           recordingEvidenceObjectId: wrongKind.id,
           requestedModes: [MEDIA_ANALYSIS_MODES.audioSecondVoice],
           options: validOptions(),
@@ -194,6 +279,77 @@ test("processMediaAnalysisJob rejects missing or wrong-kind recording evidence",
         adapters: emptyAdapters(),
       }),
     (error) => error instanceof MediaWorkerError && error.code === "MEDIA_EVIDENCE_INVALID",
+  );
+});
+
+test("processMediaAnalysisJob rejects a participant that is not the recording candidate", async (t) => {
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: testRunId,
+        },
+      },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          contains: testRunId,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const { session, evidence } = await createRecordingEvidence(prisma, "participant-validation");
+  const interviewer = await prisma.user.create({
+    data: {
+      email: `interviewer.participant-validation.${testRunId}@example.test`,
+      displayName: "Media Worker Interviewer",
+      role: "INTERVIEWER",
+    },
+  });
+  const interviewerParticipant = await prisma.participant.create({
+    data: {
+      sessionId: session.id,
+      userId: interviewer.id,
+      role: "INTERVIEWER",
+      joinedAt: new Date(),
+    },
+  });
+  await prisma.evidenceObject.update({
+    where: { id: evidence.id },
+    data: {
+      metadata: {
+        livekit: {
+          recordingScope: "candidate_track",
+          participantId: interviewerParticipant.id,
+        },
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => processMediaAnalysisJob({
+      prisma,
+      job: createMediaAnalysisJob({
+        jobId: `${testRunId}-participant-validation`,
+        sessionId: session.id,
+        participantId: interviewerParticipant.id,
+        recordingEvidenceObjectId: evidence.id,
+        requestedModes: [MEDIA_ANALYSIS_MODES.videoFacePresence],
+        options: validOptions(),
+      }),
+      adapters: emptyAdapters(),
+    }),
+    (error) => error instanceof MediaWorkerError && error.code === "MEDIA_PARTICIPANT_INVALID",
   );
 });
 
@@ -213,12 +369,21 @@ test("processMediaAnalysisJob fails closed on adapter timeout and malformed adap
         },
       },
     });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          contains: testRunId,
+        },
+      },
+    });
     await prisma.$disconnect();
   });
 
-  const { session, evidence } = await createRecordingEvidence(prisma, "adapter-failures");
+  const { session, evidence, candidateParticipant } = await createRecordingEvidence(prisma, "adapter-failures");
   const job = createMediaAnalysisJob({
+    jobId: `${testRunId}-adapter-failures`,
     sessionId: session.id,
+    participantId: candidateParticipant.id,
     recordingEvidenceObjectId: evidence.id,
     requestedModes: [MEDIA_ANALYSIS_MODES.audioSecondVoice],
     options: {
@@ -280,6 +445,21 @@ async function createRecordingEvidence(prisma, suffix) {
       title: `${testRunId}-${suffix} interview`,
     },
   });
+  const candidate = await prisma.user.create({
+    data: {
+      email: `candidate.${suffix}.${testRunId}@example.test`,
+      displayName: "Media Worker Candidate",
+      role: "CANDIDATE",
+    },
+  });
+  const candidateParticipant = await prisma.participant.create({
+    data: {
+      sessionId: session.id,
+      userId: candidate.id,
+      role: "CANDIDATE",
+      joinedAt: new Date(),
+    },
+  });
   const evidence = await prisma.evidenceObject.create({
     data: {
       sessionId: session.id,
@@ -288,10 +468,16 @@ async function createRecordingEvidence(prisma, suffix) {
       storageKey: `recordings/${testRunId}-${suffix}.mp4`,
       contentType: "video/mp4",
       durationMs: 60000,
+      metadata: {
+        livekit: {
+          recordingScope: "candidate_track",
+          participantId: candidateParticipant.id,
+        },
+      },
     },
   });
 
-  return { session, evidence };
+  return { session, evidence, candidateParticipant };
 }
 
 function validOptions() {

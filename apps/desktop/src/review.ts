@@ -17,19 +17,32 @@ export interface RiskSummarySignalBreakdown {
 export interface ReviewerRiskSummary {
   id: string;
   sessionId: string;
+  participantId: string | null;
   evidenceObjectId: string | null;
   windowStartedAt: string;
   windowEndedAt: string;
   score: number;
   correlatedSignalCount: number;
+  meetsCorrelationPolicy: boolean;
   humanReviewRequired: boolean;
   reviewStatus: RiskSummaryReviewStatus;
   reviewerId: string | null;
   reviewedAt: string | null;
   rationale: string | null;
   signalBreakdown: RiskSummarySignalBreakdown[];
+  evidenceReferences: ReviewerEvidenceReference[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ReviewerEvidenceReference {
+  kind: "risk_event" | "editor_aggregate" | "media_evidence";
+  id: string;
+  type?: string;
+  source?: string;
+  occurredAt: string;
+  evidenceObjectId?: string | null;
+  documentId?: string;
 }
 
 export interface ListSessionRiskSummariesRequest {
@@ -143,20 +156,50 @@ function parseReviewerRiskSummary(value: unknown): ReviewerRiskSummary {
   return {
     id: requireString(record.id, "id"),
     sessionId: requireString(record.sessionId, "sessionId"),
+    participantId: requireNullableString(record.participantId, "participantId"),
     evidenceObjectId: requireNullableString(record.evidenceObjectId, "evidenceObjectId"),
     windowStartedAt: requireString(record.windowStartedAt, "windowStartedAt"),
     windowEndedAt: requireString(record.windowEndedAt, "windowEndedAt"),
     score: requireNumber(record.score, "score"),
     correlatedSignalCount: requireInteger(record.correlatedSignalCount, "correlatedSignalCount"),
+    meetsCorrelationPolicy: requireBoolean(record.meetsCorrelationPolicy, "meetsCorrelationPolicy"),
     humanReviewRequired: requireBoolean(record.humanReviewRequired, "humanReviewRequired"),
     reviewStatus,
     reviewerId: requireNullableString(record.reviewerId, "reviewerId"),
     reviewedAt: requireNullableString(record.reviewedAt, "reviewedAt"),
     rationale: requireNullableString(record.rationale, "rationale"),
     signalBreakdown: requireSignalBreakdown(record.signalBreakdown),
+    evidenceReferences: requireEvidenceReferences(record.evidenceReferences),
     createdAt: requireString(record.createdAt, "createdAt"),
     updatedAt: requireString(record.updatedAt, "updatedAt"),
   };
+}
+
+function requireEvidenceReferences(value: unknown): ReviewerEvidenceReference[] {
+  if (!Array.isArray(value)) {
+    throw new Error("Risk summary response is invalid");
+  }
+
+  return value.map((entry) => {
+    const record = requireRecord(entry, "Risk summary response is invalid");
+    const kind = requireString(record.kind, "evidence reference kind");
+    if (kind !== "risk_event" && kind !== "editor_aggregate" && kind !== "media_evidence") {
+      throw new Error("Risk summary response is invalid");
+    }
+    return {
+      kind,
+      id: requireString(record.id, "evidence reference id"),
+      occurredAt: requireString(record.occurredAt, "evidence reference occurredAt"),
+      ...(record.type === undefined ? {} : { type: requireString(record.type, "evidence reference type") }),
+      ...(record.source === undefined ? {} : { source: requireString(record.source, "evidence reference source") }),
+      ...(record.evidenceObjectId === undefined
+        ? {}
+        : { evidenceObjectId: requireNullableString(record.evidenceObjectId, "evidence reference object id") }),
+      ...(record.documentId === undefined
+        ? {}
+        : { documentId: requireString(record.documentId, "evidence reference document id") }),
+    };
+  });
 }
 
 function requireSignalBreakdown(value: unknown): RiskSummarySignalBreakdown[] {

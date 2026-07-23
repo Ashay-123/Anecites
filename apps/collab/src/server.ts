@@ -4,17 +4,26 @@ import { WebSocket, WebSocketServer, type RawData } from "ws";
 import * as Y from "yjs";
 
 import { type ReplayEvidenceOptions } from "./replay-evidence.js";
-import { trackYjsTextChange, type CollabTelemetryOptions } from "./telemetry.js";
+import {
+  trackPasteBlocked,
+  trackYjsTextChange,
+  type CollabTelemetryOptions,
+} from "./telemetry.js";
 
 export interface AuthenticatedPrincipal {
   subject: string;
   role: string;
 }
 
+export interface AuthorizedRoomContext {
+  participantId: string;
+}
+
 export type AuthorizeRoom = (
   principal: AuthenticatedPrincipal,
   sessionId: string,
-) => boolean | Promise<boolean>;
+  documentId: string,
+) => boolean | AuthorizedRoomContext | Promise<boolean | AuthorizedRoomContext>;
 
 export interface CreateCollabServerOptions {
   authJwtSecret: string;
@@ -35,13 +44,20 @@ interface RoomState {
   clients: Set<WebSocket>;
 }
 
-type ClientMessage = {
+type ClientSyncMessage = {
   type: "sync:update";
   update: string;
 };
 
+type ClientTelemetryMessage = {
+  type: "telemetry:paste-blocked";
+};
+
+type ClientMessage = ClientSyncMessage | ClientTelemetryMessage;
+
 interface ConnectionContext {
   sessionId: string;
+  participantId: string;
   documentId: string;
   principal: AuthenticatedPrincipal;
 }
@@ -122,14 +138,21 @@ async function handleConnection(input: {
     const token = normalizeRequiredParam(url.searchParams.get("token"));
     const principal = await verifyPrincipal(token, secret);
 
-    if (authorizeRoom && !(await authorizeRoom(principal, sessionId))) {
+    const authorization = authorizeRoom
+      ? await authorizeRoom(principal, sessionId, documentId)
+      : true;
+    if (!authorization) {
       socket.close(closePolicyViolation, "Unauthorized room");
       return;
     }
+    const participantId = typeof authorization === "object"
+      ? authorization.participantId
+      : principal.subject;
 
-    const room = getOrCreateRoom(rooms, sessionId);
+    const room = getOrCreateRoom(rooms, createRoomKey(sessionId, documentId));
     const context = {
       sessionId,
+      participantId,
       documentId,
       principal,
     };
@@ -186,8 +209,12 @@ function normalizeOptionalParam(value: string | null): string | null {
   return normalized && normalized.length > 0 ? normalized : null;
 }
 
-function getOrCreateRoom(rooms: Map<string, RoomState>, sessionId: string): RoomState {
-  const existing = rooms.get(sessionId);
+function createRoomKey(sessionId: string, documentId: string): string {
+  return JSON.stringify([sessionId, documentId]);
+}
+
+function getOrCreateRoom(rooms: Map<string, RoomState>, roomKey: string): RoomState {
+  const existing = rooms.get(roomKey);
 
   if (existing) {
     return existing;
@@ -198,7 +225,7 @@ function getOrCreateRoom(rooms: Map<string, RoomState>, sessionId: string): Room
     clients: new Set<WebSocket>(),
   };
 
-  rooms.set(sessionId, room);
+  rooms.set(roomKey, room);
   return room;
 }
 
@@ -223,27 +250,30 @@ function handleMessage(
 
   try {
     message = parseClientMessage(rawData);
+
+    if (message.type === "telemetry:paste-blocked") {
+      if (context.principal.role === "candidate") {
+        trackPasteBlocked(context, telemetry);
+      }
+      return;
+    }
+
     const update = Buffer.from(message.update, "base64");
     const occurredAt = (replayEvidence?.now?.() ?? new Date()).toISOString();
     void replayEvidence?.recordUpdate?.({
       sessionId: context.sessionId,
       documentId: context.documentId,
-      participantId: context.principal.subject,
+      participantId: context.participantId,
       occurredAt,
       updateBase64: message.update,
     }).catch(() => undefined);
 
     const textName = telemetry?.textName ?? defaultDocumentTextName;
-    const beforeLength = room.doc.getText(textName).length;
-    Y.applyUpdate(room.doc, update);
-    const afterLength = room.doc.getText(textName).length;
+    const change = applyYjsUpdateAndSummarizeTextChange(room.doc, textName, update);
 
     trackYjsTextChange(
       context,
-      {
-        insertedCharacterCount: Math.max(0, afterLength - beforeLength),
-        deletedCharacterCount: Math.max(0, beforeLength - afterLength),
-      },
+      change,
       telemetry,
     );
 
@@ -253,8 +283,46 @@ function handleMessage(
   }
 }
 
+function applyYjsUpdateAndSummarizeTextChange(
+  document: Y.Doc,
+  textName: string,
+  update: Uint8Array,
+): { insertedCharacterCount: number; deletedCharacterCount: number } {
+  const text = document.getText(textName);
+  let insertedCharacterCount = 0;
+  let deletedCharacterCount = 0;
+  const observer = (event: Y.YTextEvent) => {
+    for (const operation of event.delta) {
+      if (typeof operation.insert === "string") {
+        insertedCharacterCount += operation.insert.length;
+      }
+      if (typeof operation.delete === "number") {
+        deletedCharacterCount += operation.delete;
+      }
+    }
+  };
+
+  text.observe(observer);
+  try {
+    Y.applyUpdate(document, update);
+  } finally {
+    text.unobserve(observer);
+  }
+
+  return {
+    insertedCharacterCount,
+    deletedCharacterCount,
+  };
+}
+
 function parseClientMessage(rawData: RawData): ClientMessage {
-  const parsed = JSON.parse(rawData.toString()) as Partial<ClientMessage>;
+  const parsed = JSON.parse(rawData.toString()) as Record<string, unknown>;
+
+  if (parsed.type === "telemetry:paste-blocked") {
+    return {
+      type: parsed.type,
+    };
+  }
 
   if (parsed.type !== "sync:update" || typeof parsed.update !== "string") {
     throw new Error("Invalid client message");

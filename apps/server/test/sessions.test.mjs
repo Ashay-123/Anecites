@@ -3,8 +3,14 @@ import assert from "node:assert/strict";
 import { SignJWT, jwtVerify } from "jose";
 
 import { createPrismaClient } from "@anecites/db";
-import { RISK_SIGNAL_TYPES } from "@anecites/shared";
+import {
+  MEDIA_CONSENT_SCOPES,
+  MONITORING_POLICY_VERSION,
+  MONITORING_SCOPES,
+  RISK_SIGNAL_TYPES,
+} from "@anecites/shared";
 import { createApp, createRiskSummary, loadServerConfig } from "../dist/index.js";
+import { requireActiveRecordingConsents } from "../dist/media-consent.js";
 
 const databaseUrl = "postgresql://anecites:anecites_dev_password@localhost:5432/anecites";
 const authJwtSecret = "test_auth_secret_minimum_32_characters";
@@ -19,6 +25,7 @@ function testConfig(overrides = {}) {
     DATABASE_URL: databaseUrl,
     REDIS_URL: "redis://localhost:6379",
     RABBITMQ_URL: "amqp://anecites:anecites_dev_password@localhost:5672",
+    LIVEKIT_RECORDING_S3_ENDPOINT: "http://minio:9000",
     JUDGE0_BASE_URL: "http://localhost:2358",
     JUDGE0_ALLOWED_LANGUAGE_IDS: "63,71",
     AUTH_JWT_SECRET: authJwtSecret,
@@ -66,6 +73,106 @@ async function authorizationHeader(role = "interviewer", subject = `test-user-${
 
   return {
     Authorization: `Bearer ${token}`,
+  };
+}
+
+async function startMonitoringForParticipant(server, sessionId, participant, clientInstanceId) {
+  const headers = await authorizationHeader("candidate", participant.user.id);
+  const result = await jsonRequest(server, `/sessions/${sessionId}/monitoring/start`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      participantId: participant.id,
+      policyVersion: MONITORING_POLICY_VERSION,
+      scopes: MONITORING_SCOPES,
+      clientInstanceId,
+      clientVersion: "0.0.0-test",
+      grantedAt: "2026-07-14T10:00:00.000Z",
+    }),
+  });
+
+  assert.equal(result.response.status, 201);
+  return {
+    headers,
+    monitoringConsentId: result.body.monitoringConsent.id,
+  };
+}
+
+async function createRecordingParticipants(prisma, sessionId, label) {
+  const interviewerUser = await prisma.user.create({
+    data: {
+      email: `interviewer.${label}.${testRunId}@example.test`,
+      displayName: `Interviewer ${label}`,
+      role: "INTERVIEWER",
+    },
+  });
+  const candidateUser = await prisma.user.create({
+    data: {
+      email: `candidate.${label}.${testRunId}@example.test`,
+      displayName: `Candidate ${label}`,
+      role: "CANDIDATE",
+    },
+  });
+  const interviewerParticipant = await prisma.participant.create({
+    data: {
+      sessionId,
+      userId: interviewerUser.id,
+      role: "INTERVIEWER",
+      joinedAt: new Date(),
+    },
+  });
+  const candidateParticipant = await prisma.participant.create({
+    data: {
+      sessionId,
+      userId: candidateUser.id,
+      role: "CANDIDATE",
+      joinedAt: new Date(),
+    },
+  });
+  const interviewerHeaders = await authorizationHeader("interviewer", interviewerUser.id);
+  const candidateHeaders = await authorizationHeader("candidate", candidateUser.id);
+
+  return {
+    interviewerUser,
+    candidateUser,
+    interviewerParticipant,
+    candidateParticipant,
+    interviewerHeaders,
+    candidateHeaders,
+  };
+}
+
+async function createConsentedRecordingParticipants(prisma, server, sessionId, label, options = {}) {
+  const participants = await createRecordingParticipants(prisma, sessionId, label);
+
+  const interviewerConsent = await jsonRequest(server, `/sessions/${sessionId}/media-consent`, {
+    method: "POST",
+    headers: participants.interviewerHeaders,
+    body: JSON.stringify({
+      accepted: true,
+      scopes: [MEDIA_CONSENT_SCOPES.sessionRecording],
+    }),
+  });
+  assert.equal(interviewerConsent.response.status, 201);
+
+  const candidateConsent = await jsonRequest(server, `/sessions/${sessionId}/media-consent`, {
+    method: "POST",
+    headers: participants.candidateHeaders,
+    body: JSON.stringify({
+      accepted: true,
+      scopes: [
+        MEDIA_CONSENT_SCOPES.sessionRecording,
+        MEDIA_CONSENT_SCOPES.videoFaceAnalysis,
+        ...(options.includeGazeCalibration ? [MEDIA_CONSENT_SCOPES.videoGazeCalibration] : []),
+      ],
+    }),
+  });
+  assert.equal(candidateConsent.response.status, 201);
+
+  return {
+    ...participants,
+    interviewerConsent: interviewerConsent.body.mediaConsent,
+    candidateConsent: candidateConsent.body.mediaConsent,
   };
 }
 
@@ -382,12 +489,734 @@ test("session routes fail closed when LiveKit credentials are unavailable", asyn
   });
 });
 
-test("session routes start and stop LiveKit room recordings", async (t) => {
+test("session routes record media consent only for the authenticated participant", async (t) => {
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: `${testRunId}-media-consent`,
+        },
+      },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          endsWith: `.${testRunId}@example.test`,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const noticeText = "Test recording notice for media-consent route coverage.";
+  const app = createApp(testConfig({
+    MEDIA_ANALYSIS_ENABLED: "true",
+    MEDIA_CONSENT_NOTICE_TEXT: noticeText,
+  }), {
+    logger: quietLogger(),
+    prisma,
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const sessionResult = await jsonRequest(server, "/sessions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      title: `${testRunId}-media-consent interview`,
+    }),
+  });
+  const sessionId = sessionResult.body.session.id;
+  const participants = await createConsentedRecordingParticipants(
+    prisma,
+    server,
+    sessionId,
+    "media-consent",
+  );
+
+  const requirementsResult = await jsonRequest(
+    server,
+    `/sessions/${sessionId}/media-consent-requirements`,
+    { headers: participants.candidateHeaders },
+  );
+  assert.equal(requirementsResult.response.status, 200);
+  assert.deepEqual(requirementsResult.body.requirements.requiredScopes, [
+    "session_recording",
+    "video_face_analysis",
+  ]);
+  assert.equal(requirementsResult.body.requirements.noticeText, noticeText);
+  assert.equal(requirementsResult.body.requirements.mediaConsent.id, participants.candidateConsent.id);
+
+  const repeatGrantResult = await jsonRequest(server, `/sessions/${sessionId}/media-consent`, {
+    method: "POST",
+    headers: participants.candidateHeaders,
+    body: JSON.stringify({
+      accepted: true,
+      scopes: [
+        MEDIA_CONSENT_SCOPES.sessionRecording,
+        MEDIA_CONSENT_SCOPES.videoFaceAnalysis,
+      ],
+    }),
+  });
+  assert.equal(repeatGrantResult.response.status, 201);
+  assert.equal(repeatGrantResult.body.mediaConsent.id, participants.candidateConsent.id);
+
+  const unacknowledgedResult = await jsonRequest(server, `/sessions/${sessionId}/media-consent`, {
+    method: "POST",
+    headers: participants.candidateHeaders,
+    body: JSON.stringify({
+      accepted: false,
+      scopes: [MEDIA_CONSENT_SCOPES.sessionRecording],
+    }),
+  });
+  assert.equal(unacknowledgedResult.response.status, 400);
+  assert.equal(unacknowledgedResult.body.error.code, "BAD_REQUEST");
+
+  const revokeResult = await jsonRequest(
+    server,
+    `/sessions/${sessionId}/media-consent/${participants.candidateConsent.id}/revoke`,
+    {
+      method: "POST",
+      headers: participants.candidateHeaders,
+      body: JSON.stringify({}),
+    },
+  );
+  assert.equal(revokeResult.response.status, 200);
+  assert.equal(typeof revokeResult.body.mediaConsent.revokedAt, "string");
+
+  const requirementsAfterRevoke = await jsonRequest(
+    server,
+    `/sessions/${sessionId}/media-consent-requirements`,
+    { headers: participants.candidateHeaders },
+  );
+  assert.equal(requirementsAfterRevoke.response.status, 200);
+  assert.equal(requirementsAfterRevoke.body.requirements.mediaConsent, null);
+});
+
+test("session routes persist bounded candidate gaze calibration acknowledgements", async (t) => {
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: `${testRunId}-gaze-calibration`,
+        },
+      },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          endsWith: `.${testRunId}@example.test`,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const app = createApp(testConfig({
+    MEDIA_ANALYSIS_ENABLED: "true",
+    MEDIA_ANALYSIS_GAZE_MODE: "shadow",
+  }), {
+    logger: quietLogger(),
+    prisma,
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const sessionResult = await jsonRequest(server, "/sessions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      title: `${testRunId}-gaze-calibration interview`,
+    }),
+  });
+  const sessionId = sessionResult.body.session.id;
+  const participants = await createConsentedRecordingParticipants(
+    prisma,
+    server,
+    sessionId,
+    "gaze-calibration",
+  );
+
+  const interviewerStart = await jsonRequest(server, `/sessions/${sessionId}/gaze-calibrations`, {
+    method: "POST",
+    headers: participants.interviewerHeaders,
+    body: JSON.stringify({}),
+  });
+  assert.equal(interviewerStart.response.status, 403);
+
+  const missingCalibrationConsent = await jsonRequest(server, `/sessions/${sessionId}/gaze-calibrations`, {
+    method: "POST",
+    headers: participants.candidateHeaders,
+    body: JSON.stringify({}),
+  });
+  assert.equal(missingCalibrationConsent.response.status, 409);
+  assert.equal(missingCalibrationConsent.body.error.code, "MEDIA_CONSENT_REQUIRED");
+
+  const calibrationConsent = await jsonRequest(server, `/sessions/${sessionId}/media-consent`, {
+    method: "POST",
+    headers: participants.candidateHeaders,
+    body: JSON.stringify({
+      accepted: true,
+      scopes: [
+        MEDIA_CONSENT_SCOPES.sessionRecording,
+        MEDIA_CONSENT_SCOPES.videoFaceAnalysis,
+        MEDIA_CONSENT_SCOPES.videoGazeCalibration,
+      ],
+    }),
+  });
+  assert.equal(calibrationConsent.response.status, 201);
+
+  const start = await jsonRequest(server, `/sessions/${sessionId}/gaze-calibrations`, {
+    method: "POST",
+    headers: participants.candidateHeaders,
+    body: JSON.stringify({}),
+  });
+  assert.equal(start.response.status, 409);
+  assert.equal(start.body.error.code, "GAZE_CALIBRATION_RECORDING_REQUIRED");
+
+  const evidenceObject = await prisma.evidenceObject.create({
+    data: {
+      sessionId,
+      kind: "SESSION_RECORDING",
+      storageBucket: "test-recordings",
+      storageKey: `gaze-calibration/${sessionId}.mp4`,
+      contentType: "video/mp4",
+      metadata: {
+        livekit: {
+          recordingScope: "candidate_track",
+          participantId: participants.candidateParticipant.id,
+        },
+      },
+    },
+  });
+  const recording = await prisma.sessionRecording.create({
+    data: {
+      sessionId,
+      egressId: `gaze-calibration-${sessionId}`,
+      evidenceObjectId: evidenceObject.id,
+      startedAt: new Date(),
+    },
+  });
+
+  const recordedStart = await jsonRequest(server, `/sessions/${sessionId}/gaze-calibrations`, {
+    method: "POST",
+    headers: participants.candidateHeaders,
+    body: JSON.stringify({}),
+  });
+  assert.equal(recordedStart.response.status, 201);
+  assert.equal(recordedStart.body.gazeCalibration.state, "active");
+
+  const storedStart = await prisma.gazeCalibration.findUniqueOrThrow({
+    where: { id: recordedStart.body.gazeCalibration.id },
+  });
+  assert.equal(storedStart.sessionRecordingId, recording.id);
+  assert.deepEqual(recordedStart.body.gazeCalibration.steps, []);
+
+  let calibrationId = recordedStart.body.gazeCalibration.id;
+  const firstStep = await jsonRequest(
+    server,
+    `/sessions/${sessionId}/gaze-calibrations/${calibrationId}/steps`,
+    {
+      method: "POST",
+      headers: participants.candidateHeaders,
+      body: JSON.stringify({ target: "center", sequence: 1 }),
+    },
+  );
+  assert.equal(firstStep.response.status, 200);
+  assert.equal(firstStep.body.gazeCalibration.steps.length, 1);
+  assert.equal(typeof firstStep.body.gazeCalibration.steps[0].acknowledgedAt, "string");
+
+  await prisma.sessionRecording.update({
+    where: { id: recording.id },
+    data: {
+      state: "COMPLETED",
+      completedAt: new Date(),
+    },
+  });
+  const stoppedRecordingStep = await jsonRequest(
+    server,
+    `/sessions/${sessionId}/gaze-calibrations/${calibrationId}/steps`,
+    {
+      method: "POST",
+      headers: participants.candidateHeaders,
+      body: JSON.stringify({ target: "upper_left", sequence: 2 }),
+    },
+  );
+  assert.equal(stoppedRecordingStep.response.status, 409);
+  assert.equal(stoppedRecordingStep.body.error.code, "GAZE_CALIBRATION_RECORDING_REQUIRED");
+  const abandonedCalibration = await prisma.gazeCalibration.findUniqueOrThrow({
+    where: { id: calibrationId },
+  });
+  assert.equal(abandonedCalibration.state, "ABANDONED");
+
+  const replacementEvidenceObject = await prisma.evidenceObject.create({
+    data: {
+      sessionId,
+      kind: "SESSION_RECORDING",
+      storageBucket: "test-recordings",
+      storageKey: `gaze-calibration/${sessionId}-replacement.mp4`,
+      contentType: "video/mp4",
+      metadata: {
+        livekit: {
+          recordingScope: "candidate_track",
+          participantId: participants.candidateParticipant.id,
+        },
+      },
+    },
+  });
+  const replacementRecording = await prisma.sessionRecording.create({
+    data: {
+      sessionId,
+      egressId: `gaze-calibration-${sessionId}-replacement`,
+      evidenceObjectId: replacementEvidenceObject.id,
+      startedAt: new Date(),
+    },
+  });
+  const restarted = await jsonRequest(server, `/sessions/${sessionId}/gaze-calibrations`, {
+    method: "POST",
+    headers: participants.candidateHeaders,
+    body: JSON.stringify({}),
+  });
+  assert.equal(restarted.response.status, 201);
+  calibrationId = restarted.body.gazeCalibration.id;
+  const restartedCalibration = await prisma.gazeCalibration.findUniqueOrThrow({
+    where: { id: calibrationId },
+  });
+  assert.equal(restartedCalibration.sessionRecordingId, replacementRecording.id);
+
+  const restartedFirstStep = await jsonRequest(
+    server,
+    `/sessions/${sessionId}/gaze-calibrations/${calibrationId}/steps`,
+    {
+      method: "POST",
+      headers: participants.candidateHeaders,
+      body: JSON.stringify({ target: "center", sequence: 1 }),
+    },
+  );
+  assert.equal(restartedFirstStep.response.status, 200);
+
+  const revokeCalibrationConsent = await jsonRequest(
+    server,
+    `/sessions/${sessionId}/media-consent/${calibrationConsent.body.mediaConsent.id}/revoke`,
+    {
+      method: "POST",
+      headers: participants.candidateHeaders,
+      body: JSON.stringify({}),
+    },
+  );
+  assert.equal(revokeCalibrationConsent.response.status, 200);
+
+  const blockedAfterRevoke = await jsonRequest(
+    server,
+    `/sessions/${sessionId}/gaze-calibrations/${calibrationId}/steps`,
+    {
+      method: "POST",
+      headers: participants.candidateHeaders,
+      body: JSON.stringify({ target: "upper_left", sequence: 2 }),
+    },
+  );
+  assert.equal(blockedAfterRevoke.response.status, 409);
+  assert.equal(blockedAfterRevoke.body.error.code, "MEDIA_CONSENT_REQUIRED");
+
+  const renewedCalibrationConsent = await jsonRequest(server, `/sessions/${sessionId}/media-consent`, {
+    method: "POST",
+    headers: participants.candidateHeaders,
+    body: JSON.stringify({
+      accepted: true,
+      scopes: [
+        MEDIA_CONSENT_SCOPES.sessionRecording,
+        MEDIA_CONSENT_SCOPES.videoFaceAnalysis,
+        MEDIA_CONSENT_SCOPES.videoGazeCalibration,
+      ],
+    }),
+  });
+  assert.equal(renewedCalibrationConsent.response.status, 201);
+
+  const invalidStep = await jsonRequest(
+    server,
+    `/sessions/${sessionId}/gaze-calibrations/${calibrationId}/steps`,
+    {
+      method: "POST",
+      headers: participants.candidateHeaders,
+      body: JSON.stringify({ target: "upper_right", sequence: 2, faceLandmarks: ["blocked"] }),
+    },
+  );
+  assert.equal(invalidStep.response.status, 400);
+  assert.equal(invalidStep.body.error.code, "BAD_REQUEST");
+
+  for (const step of [
+    { target: "upper_left", sequence: 2 },
+    { target: "upper_right", sequence: 3 },
+    { target: "lower_left", sequence: 4 },
+    { target: "lower_right", sequence: 5 },
+  ]) {
+    const result = await jsonRequest(
+      server,
+      `/sessions/${sessionId}/gaze-calibrations/${calibrationId}/steps`,
+      {
+        method: "POST",
+        headers: participants.candidateHeaders,
+        body: JSON.stringify(step),
+      },
+    );
+    assert.equal(result.response.status, 200);
+  }
+
+  const complete = await prisma.gazeCalibration.findUnique({
+    where: { id: calibrationId },
+  });
+  assert.equal(complete?.state, "COMPLETED");
+  assert.equal(complete?.steps.length, 5);
+});
+
+test("session routes require an active interviewer and current media consent before recording", async (t) => {
+  const fakeEgressClient = {
+    startCalls: [],
+    async startParticipantEgress(...args) {
+      this.startCalls.push(args);
+      return {
+        egressId: "egress-should-not-start",
+        roomName: args[0],
+        status: 1,
+      };
+    },
+  };
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: `${testRunId}-recording-consent-gate`,
+        },
+      },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          endsWith: `.${testRunId}@example.test`,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const app = createApp(
+    testConfig({
+      LIVEKIT_URL: "ws://127.0.0.1:7880",
+      LIVEKIT_API_KEY: "test_livekit_key",
+      LIVEKIT_API_SECRET: "test_livekit_secret_minimum_32_characters",
+      S3_ENDPOINT: "http://127.0.0.1:9000",
+      S3_BUCKET: "anecites-dev",
+      S3_ACCESS_KEY_ID: "anecites",
+      S3_SECRET_ACCESS_KEY: "anecites_dev_password",
+    }),
+    {
+      logger: quietLogger(),
+      prisma,
+      liveKitEgressClient: fakeEgressClient,
+    },
+  );
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const sessionResult = await jsonRequest(server, "/sessions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      title: `${testRunId}-recording-consent-gate interview`,
+    }),
+  });
+  const sessionId = sessionResult.body.session.id;
+  const participants = await createRecordingParticipants(prisma, sessionId, "recording-consent-gate");
+
+  const candidateResult = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording`, {
+    method: "POST",
+    headers: participants.candidateHeaders,
+    body: JSON.stringify({}),
+  });
+  assert.equal(candidateResult.response.status, 403);
+  assert.equal(candidateResult.body.error.code, "RECORDING_INTERVIEWER_REQUIRED");
+
+  const noConsentResult = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording`, {
+    method: "POST",
+    headers: participants.interviewerHeaders,
+    body: JSON.stringify({}),
+  });
+  assert.equal(noConsentResult.response.status, 409);
+  assert.equal(noConsentResult.body.error.code, "MEDIA_CONSENT_REQUIRED");
+  assert.equal(fakeEgressClient.startCalls.length, 0);
+});
+
+test("recording consent requires an active interviewer and candidate before recording can start", async (t) => {
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  const config = testConfig();
+  const session = await prisma.session.create({
+    data: {
+      title: `${testRunId}-recording-roles interview`,
+    },
+  });
+  const interviewer = await prisma.user.create({
+    data: {
+      email: `interviewer.recording-roles.${testRunId}@example.test`,
+      displayName: "Interviewer recording roles",
+      role: "INTERVIEWER",
+    },
+  });
+  const participant = await prisma.participant.create({
+    data: {
+      sessionId: session.id,
+      userId: interviewer.id,
+      role: "INTERVIEWER",
+      joinedAt: new Date(),
+    },
+  });
+  await prisma.mediaConsent.create({
+    data: {
+      sessionId: session.id,
+      participantId: participant.id,
+      noticeVersion: config.mediaConsentNoticeVersion,
+      noticeFingerprint: config.mediaConsentNoticeFingerprint,
+      scopes: [MEDIA_CONSENT_SCOPES.sessionRecording],
+      grantedAt: new Date(),
+    },
+  });
+  t.after(async () => {
+    await prisma.session.delete({ where: { id: session.id } }).catch(() => undefined);
+    await prisma.user.delete({ where: { id: interviewer.id } }).catch(() => undefined);
+    await prisma.$disconnect();
+  });
+
+  await assert.rejects(
+    () => requireActiveRecordingConsents(prisma, config, session.id),
+    /An active interviewer and candidate must consent before recording or media analysis/,
+  );
+});
+
+test("session routes block late participants after recording begins", async (t) => {
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  const session = await prisma.session.create({
+    data: {
+      title: `${testRunId}-recording-join-lock interview`,
+    },
+  });
+  const evidence = await prisma.evidenceObject.create({
+    data: {
+      sessionId: session.id,
+      kind: "SESSION_RECORDING",
+      storageBucket: "anecites-test",
+      storageKey: `recordings/${session.id}/join-lock.mp4`,
+      contentType: "video/mp4",
+    },
+  });
+  await prisma.sessionRecording.create({
+    data: {
+      sessionId: session.id,
+      egressId: `egress-${session.id}-join-lock`,
+      evidenceObjectId: evidence.id,
+      state: "ACTIVE",
+      startedAt: new Date(),
+    },
+  });
+  t.after(async () => {
+    await prisma.session.delete({ where: { id: session.id } }).catch(() => undefined);
+    await prisma.user.deleteMany({
+      where: {
+        email: `late-participant.${testRunId}@example.test`,
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const app = createApp(testConfig(), {
+    logger: quietLogger(),
+    prisma,
+  });
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const joinResult = await jsonRequest(server, `/sessions/${session.id}/participants`, {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      role: "candidate",
+      user: {
+        email: `late-participant.${testRunId}@example.test`,
+        displayName: "Late participant",
+      },
+    }),
+  });
+
+  assert.equal(joinResult.response.status, 409);
+  assert.deepEqual(joinResult.body, {
+    error: {
+      code: "RECORDING_PARTICIPANT_JOIN_BLOCKED",
+      message: "Participants cannot join while a session recording is active",
+    },
+  });
+  assert.equal(
+    await prisma.user.count({
+      where: {
+        email: `late-participant.${testRunId}@example.test`,
+      },
+    }),
+    0,
+  );
+});
+
+test("candidate-scoped recording rejects sessions with multiple active candidates", async (t) => {
+  const fakeEgressClient = {
+    startCalls: [],
+    async startParticipantEgress(...args) {
+      this.startCalls.push(args);
+      return {
+        egressId: "egress-multiple-candidates",
+        roomName: args[0],
+        status: 1,
+      };
+    },
+  };
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: `${testRunId}-multiple-candidates`,
+        },
+      },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          endsWith: `.${testRunId}@example.test`,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const app = createApp(
+    testConfig({
+      LIVEKIT_URL: "ws://127.0.0.1:7880",
+      LIVEKIT_API_KEY: "test_livekit_key",
+      LIVEKIT_API_SECRET: "test_livekit_secret_minimum_32_characters",
+      S3_ENDPOINT: "http://127.0.0.1:9000",
+      S3_BUCKET: "anecites-dev",
+      S3_ACCESS_KEY_ID: "anecites",
+      S3_SECRET_ACCESS_KEY: "anecites_dev_password",
+    }),
+    {
+      logger: quietLogger(),
+      prisma,
+      liveKitEgressClient: fakeEgressClient,
+    },
+  );
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const createResult = await jsonRequest(server, "/sessions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      title: `${testRunId}-multiple-candidates interview`,
+    }),
+  });
+  const sessionId = createResult.body.session.id;
+  const participants = await createConsentedRecordingParticipants(
+    prisma,
+    server,
+    sessionId,
+    "multiple-candidates-primary",
+  );
+  const secondCandidateUser = await prisma.user.create({
+    data: {
+      email: `candidate.multiple-candidates-secondary.${testRunId}@example.test`,
+      displayName: "Second Candidate",
+      role: "CANDIDATE",
+    },
+  });
+  await prisma.participant.create({
+    data: {
+      sessionId,
+      userId: secondCandidateUser.id,
+      role: "CANDIDATE",
+      joinedAt: new Date(),
+    },
+  });
+  const secondCandidateHeaders = await authorizationHeader("candidate", secondCandidateUser.id);
+  const secondCandidateConsent = await jsonRequest(server, `/sessions/${sessionId}/media-consent`, {
+    method: "POST",
+    headers: secondCandidateHeaders,
+    body: JSON.stringify({
+      accepted: true,
+      scopes: [
+        MEDIA_CONSENT_SCOPES.sessionRecording,
+        MEDIA_CONSENT_SCOPES.videoFaceAnalysis,
+      ],
+    }),
+  });
+  assert.equal(secondCandidateConsent.response.status, 201);
+
+  const startResult = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording`, {
+    method: "POST",
+    headers: participants.interviewerHeaders,
+    body: JSON.stringify({}),
+  });
+
+  assert.equal(startResult.response.status, 409);
+  assert.equal(startResult.body.error.code, "LIVEKIT_RECORDING_CANDIDATE_REQUIRED");
+  assert.equal(fakeEgressClient.startCalls.length, 0);
+});
+
+test("session routes start and stop candidate-scoped LiveKit recordings", async (t) => {
+  const fakeMediaAnalysisPublisher = {
+    calls: [],
+    async publish(job) {
+      this.calls.push(job);
+    },
+  };
   const fakeEgressClient = {
     startCalls: [],
     stopCalls: [],
-    async startRoomCompositeEgress(roomName, output, options) {
-      this.startCalls.push({ roomName, output, options });
+    async startParticipantEgress(roomName, participantIdentity, output, options) {
+      this.startCalls.push({ roomName, participantIdentity, output, options });
       return {
         egressId: "egress-test-1",
         roomName,
@@ -399,7 +1228,7 @@ test("session routes start and stop LiveKit room recordings", async (t) => {
       return {
         egressId,
         roomName: "session-stopped",
-        status: 4,
+        status: 3,
       };
     },
   };
@@ -418,6 +1247,13 @@ test("session routes start and stop LiveKit room recordings", async (t) => {
         },
       },
     });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          endsWith: `.${testRunId}@example.test`,
+        },
+      },
+    });
     await prisma.$disconnect();
   });
 
@@ -433,11 +1269,13 @@ test("session routes start and stop LiveKit room recordings", async (t) => {
       S3_REGION: "us-east-1",
       S3_FORCE_PATH_STYLE: "true",
       LIVEKIT_RECORDING_KEY_PREFIX: "recordings/livekit",
+      MEDIA_ANALYSIS_ENABLED: "true",
     }),
     {
       logger: quietLogger(),
       prisma,
       liveKitEgressClient: fakeEgressClient,
+      mediaAnalysisPublisher: fakeMediaAnalysisPublisher,
     },
   );
   const server = await listen(app);
@@ -451,10 +1289,16 @@ test("session routes start and stop LiveKit room recordings", async (t) => {
     }),
   });
   const sessionId = createResult.body.session.id;
+  const participants = await createConsentedRecordingParticipants(
+    prisma,
+    server,
+    sessionId,
+    "recording",
+  );
 
   const startResult = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording`, {
     method: "POST",
-    headers: await authorizationHeader(),
+    headers: participants.interviewerHeaders,
     body: JSON.stringify({}),
   });
 
@@ -463,15 +1307,49 @@ test("session routes start and stop LiveKit room recordings", async (t) => {
   assert.equal(startResult.body.recording.roomName, `session-${sessionId}`);
   assert.equal(startResult.body.recording.status, 1);
   assert.equal(typeof startResult.body.recording.evidenceObjectId, "string");
-  assert.match(startResult.body.recording.storageKey, new RegExp(`^recordings/livekit/${sessionId}/[0-9]+\\.mp4$`));
+  assert.match(
+    startResult.body.recording.storageKey,
+    new RegExp(`^recordings/livekit/${sessionId}/[0-9a-f-]{36}\\.mp4$`),
+  );
+  assert.equal(startResult.body.sessionRecording.egressId, "egress-test-1");
+  assert.equal(startResult.body.sessionRecording.evidenceObjectId, startResult.body.recording.evidenceObjectId);
+  assert.equal(startResult.body.sessionRecording.state, "active");
   assert.equal(fakeEgressClient.startCalls.length, 1);
+
+  const interviewerRecordingStatus = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording`, {
+    headers: participants.interviewerHeaders,
+  });
+  assert.equal(interviewerRecordingStatus.response.status, 200);
+  assert.deepEqual(interviewerRecordingStatus.body.recordingStatus, {
+    state: "active",
+    startedAt: startResult.body.sessionRecording.startedAt,
+    stopRequestedAt: null,
+    completedAt: null,
+  });
+  assert.deepEqual(interviewerRecordingStatus.body.recordingControl, {
+    egressId: "egress-test-1",
+  });
+
+  const candidateRecordingStatus = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording`, {
+    headers: participants.candidateHeaders,
+  });
+  assert.equal(candidateRecordingStatus.response.status, 200);
+  assert.deepEqual(candidateRecordingStatus.body.recordingStatus, interviewerRecordingStatus.body.recordingStatus);
+  assert.equal(candidateRecordingStatus.body.recordingControl, null);
+  assert.doesNotMatch(JSON.stringify(candidateRecordingStatus.body.recordingStatus), /egress|evidence/i);
+
   assert.equal(fakeEgressClient.startCalls[0].roomName, `session-${sessionId}`);
-  assert.equal(fakeEgressClient.startCalls[0].options.layout, "grid");
+  assert.equal(
+    fakeEgressClient.startCalls[0].participantIdentity,
+    `participant-${participants.candidateParticipant.id}`,
+  );
+  assert.equal(fakeEgressClient.startCalls[0].options.screenShare, false);
   assert.match(
     fakeEgressClient.startCalls[0].output.file.filepath,
-    new RegExp(`^recordings/livekit/${sessionId}/[0-9]+\\.mp4$`),
+    new RegExp(`^recordings/livekit/${sessionId}/[0-9a-f-]{36}\\.mp4$`),
   );
   assert.equal(fakeEgressClient.startCalls[0].output.file.output.case, "s3");
+  assert.equal(fakeEgressClient.startCalls[0].output.file.output.value.endpoint, "http://minio:9000");
   assert.equal(fakeEgressClient.startCalls[0].output.file.output.value.bucket, "anecites-dev");
   assert.equal(fakeEgressClient.startCalls[0].output.file.output.value.forcePathStyle, true);
 
@@ -485,29 +1363,321 @@ test("session routes start and stop LiveKit room recordings", async (t) => {
   assert.equal(recordingEvidence.storageBucket, "anecites-dev");
   assert.equal(recordingEvidence.storageKey, startResult.body.recording.storageKey);
   assert.equal(recordingEvidence.contentType, "video/mp4");
-  assert.deepEqual(recordingEvidence.metadata, {
-    livekit: {
-      egressId: "egress-test-1",
-      roomName: `session-${sessionId}`,
-      status: 1,
-    },
+  assert.deepEqual(recordingEvidence.metadata.livekit, {
+    egressId: "egress-test-1",
+    roomName: `session-${sessionId}`,
+    status: 1,
+    recordingScope: "candidate_track",
+    participantId: participants.candidateParticipant.id,
   });
+  assert.deepEqual(
+    recordingEvidence.metadata.mediaConsent.participants.map((consent) => consent.participantRole),
+    ["interviewer", "candidate"],
+  );
+  assert.deepEqual(
+    recordingEvidence.metadata.mediaConsent.participants.map((consent) => consent.scopes),
+    [["session_recording"], ["session_recording", "video_face_analysis"]],
+  );
+  assert.equal(
+    recordingEvidence.metadata.mediaConsent.participants.every(
+      (consent) => /^[a-f0-9]{64}$/.test(consent.noticeFingerprint),
+    ),
+    true,
+  );
+
+  const duplicateStartResult = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording`, {
+    method: "POST",
+    headers: participants.interviewerHeaders,
+    body: JSON.stringify({}),
+  });
+  assert.equal(duplicateStartResult.response.status, 409);
+  assert.equal(duplicateStartResult.body.error.code, "LIVEKIT_RECORDING_ALREADY_ACTIVE");
+  assert.equal(fakeEgressClient.startCalls.length, 1);
 
   const stopResult = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording/egress-test-1/stop`, {
     method: "POST",
-    headers: await authorizationHeader(),
+    headers: participants.interviewerHeaders,
     body: JSON.stringify({}),
   });
 
   assert.equal(stopResult.response.status, 200);
   assert.deepEqual(fakeEgressClient.stopCalls, ["egress-test-1"]);
   assert.equal(stopResult.body.recording.egressId, "egress-test-1");
-  assert.equal(stopResult.body.recording.status, 4);
+  assert.equal(stopResult.body.recording.status, 3);
+  assert.equal(stopResult.body.sessionRecording.state, "completed");
+  assert.equal(stopResult.body.mediaAnalysis.status, "queued");
+  assert.equal(fakeMediaAnalysisPublisher.calls.length, 1);
+
+  const completedRecordingStatus = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording`, {
+    headers: participants.candidateHeaders,
+  });
+  assert.equal(completedRecordingStatus.response.status, 200);
+  assert.equal(completedRecordingStatus.body.recordingStatus.state, "completed");
+  assert.equal(completedRecordingStatus.body.recordingControl, null);
+  assert.deepEqual(fakeMediaAnalysisPublisher.calls[0], {
+    version: 1,
+    jobId: `media-analysis:${recordingEvidence.id}`,
+    sessionId,
+    participantId: participants.candidateParticipant.id,
+    recordingEvidenceObjectId: recordingEvidence.id,
+    requestedModes: ["video.face_presence"],
+    options: {
+      sampleWindowMs: 10_000,
+      maxSamplesPerRecording: 12,
+      requestTimeoutMs: 30_000,
+      confidenceThresholds: {
+        secondVoice: 0.8,
+        faceMissing: 0.8,
+        multipleFaces: 0.8,
+        gazeOffscreen: 0.85,
+      },
+      shadowModes: [],
+    },
+  });
+  assert.doesNotMatch(
+    JSON.stringify(fakeMediaAnalysisPublisher.calls[0]),
+    /accessKey|secret|rawMedia|storageKey/i,
+  );
+});
+
+test("session routes stop recording but skip media analysis after consent is withdrawn", async (t) => {
+  const fakeMediaAnalysisPublisher = {
+    calls: [],
+    async publish(job) {
+      this.calls.push(job);
+    },
+  };
+  const fakeEgressClient = {
+    stopCalls: [],
+    async startParticipantEgress(roomName) {
+      return {
+        egressId: "egress-withdrawal",
+        roomName,
+        status: 1,
+      };
+    },
+    async stopEgress(egressId) {
+      this.stopCalls.push(egressId);
+      return {
+        egressId,
+        roomName: "session-withdrawal",
+        status: 3,
+      };
+    },
+  };
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: `${testRunId}-recording-withdrawal`,
+        },
+      },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          endsWith: `.${testRunId}@example.test`,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const app = createApp(
+    testConfig({
+      LIVEKIT_URL: "ws://127.0.0.1:7880",
+      LIVEKIT_API_KEY: "test_livekit_key",
+      LIVEKIT_API_SECRET: "test_livekit_secret_minimum_32_characters",
+      S3_ENDPOINT: "http://127.0.0.1:9000",
+      S3_BUCKET: "anecites-dev",
+      S3_ACCESS_KEY_ID: "anecites",
+      S3_SECRET_ACCESS_KEY: "anecites_dev_password",
+      MEDIA_ANALYSIS_ENABLED: "true",
+    }),
+    {
+      logger: quietLogger(),
+      prisma,
+      liveKitEgressClient: fakeEgressClient,
+      mediaAnalysisPublisher: fakeMediaAnalysisPublisher,
+    },
+  );
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const sessionResult = await jsonRequest(server, "/sessions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      title: `${testRunId}-recording-withdrawal interview`,
+    }),
+  });
+  const sessionId = sessionResult.body.session.id;
+  const participants = await createConsentedRecordingParticipants(
+    prisma,
+    server,
+    sessionId,
+    "recording-withdrawal",
+  );
+
+  const startResult = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording`, {
+    method: "POST",
+    headers: participants.interviewerHeaders,
+    body: JSON.stringify({}),
+  });
+  assert.equal(startResult.response.status, 201);
+
+  const revokeResult = await jsonRequest(
+    server,
+    `/sessions/${sessionId}/media-consent/${participants.candidateConsent.id}/revoke`,
+    {
+      method: "POST",
+      headers: participants.candidateHeaders,
+      body: JSON.stringify({}),
+    },
+  );
+  assert.equal(revokeResult.response.status, 200);
+
+  const stopResult = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording/egress-withdrawal/stop`, {
+    method: "POST",
+    headers: participants.interviewerHeaders,
+    body: JSON.stringify({}),
+  });
+  assert.equal(stopResult.response.status, 200);
+  assert.equal(stopResult.body.mediaAnalysis.status, "not_published_consent_required");
+  assert.deepEqual(fakeEgressClient.stopCalls, ["egress-withdrawal"]);
+  assert.equal(fakeMediaAnalysisPublisher.calls.length, 0);
+});
+
+test("session state transitions start and stop one consented recording when automatic lifecycle is enabled", async (t) => {
+  const fakeEgressClient = {
+    startCalls: [],
+    stopCalls: [],
+    async startParticipantEgress(roomName, participantIdentity, output, options) {
+      this.startCalls.push({ roomName, participantIdentity, output, options });
+      return {
+        egressId: "egress-auto-lifecycle",
+        roomName,
+        status: 1,
+      };
+    },
+    async stopEgress(egressId) {
+      this.stopCalls.push(egressId);
+      return {
+        egressId,
+        roomName: "session-auto-lifecycle",
+        status: 3,
+      };
+    },
+  };
+  const prisma = createPrismaClient({
+    datasources: {
+      db: {
+        url: databaseUrl,
+      },
+    },
+  });
+  t.after(async () => {
+    await prisma.session.deleteMany({
+      where: {
+        title: {
+          startsWith: `${testRunId}-auto-recording`,
+        },
+      },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          endsWith: `.${testRunId}@example.test`,
+        },
+      },
+    });
+    await prisma.$disconnect();
+  });
+
+  const app = createApp(
+    testConfig({
+      LIVEKIT_URL: "ws://127.0.0.1:7880",
+      LIVEKIT_API_KEY: "test_livekit_key",
+      LIVEKIT_API_SECRET: "test_livekit_secret_minimum_32_characters",
+      S3_ENDPOINT: "http://127.0.0.1:9000",
+      S3_BUCKET: "anecites-dev",
+      S3_ACCESS_KEY_ID: "anecites",
+      S3_SECRET_ACCESS_KEY: "anecites_dev_password",
+      LIVEKIT_RECORDING_AUTO_LIFECYCLE_ENABLED: "true",
+    }),
+    {
+      logger: quietLogger(),
+      prisma,
+      liveKitEgressClient: fakeEgressClient,
+    },
+  );
+  const server = await listen(app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const sessionResult = await jsonRequest(server, "/sessions", {
+    method: "POST",
+    headers: await authorizationHeader(),
+    body: JSON.stringify({
+      title: `${testRunId}-auto-recording interview`,
+    }),
+  });
+  const sessionId = sessionResult.body.session.id;
+  const participants = await createConsentedRecordingParticipants(
+    prisma,
+    server,
+    sessionId,
+    "auto-recording",
+  );
+
+  for (const state of ["scheduled", "lobby"]) {
+    const transitionResult = await jsonRequest(server, `/sessions/${sessionId}/state`, {
+      method: "PATCH",
+      headers: participants.interviewerHeaders,
+      body: JSON.stringify({ state }),
+    });
+    assert.equal(transitionResult.response.status, 200);
+  }
+
+  const activeResult = await jsonRequest(server, `/sessions/${sessionId}/state`, {
+    method: "PATCH",
+    headers: participants.interviewerHeaders,
+    body: JSON.stringify({ state: "active" }),
+  });
+  assert.equal(activeResult.response.status, 200);
+  assert.equal(activeResult.body.session.state, "active");
+  assert.equal(activeResult.body.recording.egressId, "egress-auto-lifecycle");
+  assert.equal(activeResult.body.sessionRecording.state, "active");
+  assert.equal(fakeEgressClient.startCalls.length, 1);
+
+  const endedResult = await jsonRequest(server, `/sessions/${sessionId}/state`, {
+    method: "PATCH",
+    headers: participants.interviewerHeaders,
+    body: JSON.stringify({ state: "ended" }),
+  });
+  assert.equal(endedResult.response.status, 200);
+  assert.equal(endedResult.body.session.state, "ended");
+  assert.equal(endedResult.body.recording.egressId, "egress-auto-lifecycle");
+  assert.equal(endedResult.body.sessionRecording.state, "completed");
+  assert.deepEqual(fakeEgressClient.stopCalls, ["egress-auto-lifecycle"]);
+
+  const recording = await prisma.sessionRecording.findUniqueOrThrow({
+    where: {
+      egressId: "egress-auto-lifecycle",
+    },
+  });
+  assert.equal(recording.state, "COMPLETED");
 });
 
 test("session routes do not create recording evidence when LiveKit egress start fails", async (t) => {
   const fakeEgressClient = {
-    async startRoomCompositeEgress() {
+    async startParticipantEgress() {
       throw new Error("egress unavailable");
     },
   };
@@ -523,6 +1693,13 @@ test("session routes do not create recording evidence when LiveKit egress start 
       where: {
         title: {
           startsWith: `${testRunId}-recording-egress-fail`,
+        },
+      },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          endsWith: `.${testRunId}@example.test`,
         },
       },
     });
@@ -559,10 +1736,16 @@ test("session routes do not create recording evidence when LiveKit egress start 
     }),
   });
   const sessionId = createResult.body.session.id;
+  const participants = await createConsentedRecordingParticipants(
+    prisma,
+    server,
+    sessionId,
+    "recording-egress-fail",
+  );
 
   const startResult = await jsonRequest(server, `/sessions/${sessionId}/livekit-recording`, {
     method: "POST",
-    headers: await authorizationHeader(),
+    headers: participants.interviewerHeaders,
     body: JSON.stringify({}),
   });
 
@@ -579,7 +1762,7 @@ test("session routes do not create recording evidence when LiveKit egress start 
 
 test("session routes fail closed when LiveKit recording storage is unavailable", async (t) => {
   const fakeEgressClient = {
-    async startRoomCompositeEgress() {
+    async startParticipantEgress() {
       throw new Error("should not be called");
     },
   };
@@ -595,6 +1778,13 @@ test("session routes fail closed when LiveKit recording storage is unavailable",
       where: {
         title: {
           startsWith: `${testRunId}-recording-missing`,
+        },
+      },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          endsWith: `.${testRunId}@example.test`,
         },
       },
     });
@@ -623,10 +1813,16 @@ test("session routes fail closed when LiveKit recording storage is unavailable",
       title: `${testRunId}-recording-missing interview`,
     }),
   });
+  const participants = await createConsentedRecordingParticipants(
+    prisma,
+    server,
+    createResult.body.session.id,
+    "recording-missing",
+  );
 
   const startResult = await jsonRequest(server, `/sessions/${createResult.body.session.id}/livekit-recording`, {
     method: "POST",
-    headers: await authorizationHeader(),
+    headers: participants.interviewerHeaders,
     body: JSON.stringify({}),
   });
 
@@ -665,7 +1861,15 @@ test("session routes persist native monitoring risk reports", async (t) => {
     await prisma.$disconnect();
   });
 
-  const app = createApp(testConfig(), {
+  const app = createApp(testConfig({
+    MONITORING_PROHIBITED_APPLICATION_RULES_JSON: JSON.stringify([
+      {
+        id: "interview.assistant",
+        processNames: ["assistant.exe"],
+        windowTitleContains: ["interview helper"],
+      },
+    ]),
+  }), {
     logger: quietLogger(),
     prisma,
   });
@@ -692,51 +1896,77 @@ test("session routes persist native monitoring risk reports", async (t) => {
       },
     }),
   });
-  const participantId = joinResult.body.participant.id;
+  const participant = joinResult.body.participant;
+  const monitoring = await startMonitoringForParticipant(
+    server,
+    sessionId,
+    participant,
+    `native-risk-${testRunId}`,
+  );
+  const nativeRiskRequestBody = {
+    participantId: participant.id,
+    monitoringConsentId: monitoring.monitoringConsentId,
+    windowStartedAt: "2026-07-11T01:02:00.000Z",
+    windowEndedAt: "2026-07-11T01:03:00.000Z",
+    nativeReport: {
+      occurredAt: "2026-07-11T01:02:30.000Z",
+      captureAffinityReports: [
+        {
+          platform: "windows",
+          windowId: "1002",
+          protectedFromCapture: true,
+        },
+      ],
+      virtualizationReports: [
+        {
+          platform: "windows",
+          signals: [
+            {
+              name: "cpuid.hypervisor_present",
+              detected: true,
+              detail: "vendor=Microsoft Hv",
+            },
+          ],
+        },
+      ],
+      prohibitedApplicationMatches: [
+        {
+          ruleId: "interview.assistant",
+          matchKinds: ["process_name", "window_title"],
+        },
+      ],
+    },
+  };
+
+  const forgedRiskResult = await jsonRequest(server, `/sessions/${sessionId}/native-risk-report`, {
+    method: "POST",
+    headers: await authorizationHeader("candidate", `other-candidate-${testRunId}`),
+    body: JSON.stringify(nativeRiskRequestBody),
+  });
+  assert.equal(forgedRiskResult.response.status, 403);
+  assert.equal(forgedRiskResult.body.error.code, "MONITORING_PARTICIPANT_FORBIDDEN");
 
   const nativeRiskResult = await jsonRequest(server, `/sessions/${sessionId}/native-risk-report`, {
     method: "POST",
-    headers: await authorizationHeader("candidate"),
-    body: JSON.stringify({
-      participantId,
-      windowStartedAt: "2026-07-11T01:02:00.000Z",
-      windowEndedAt: "2026-07-11T01:03:00.000Z",
-      nativeReport: {
-        occurredAt: "2026-07-11T01:02:30.000Z",
-        captureAffinityReports: [
-          {
-            platform: "windows",
-            windowId: "1002",
-            protectedFromCapture: true,
-          },
-        ],
-        virtualizationReports: [
-          {
-            platform: "windows",
-            signals: [
-              {
-                name: "cpuid.hypervisor_present",
-                detected: true,
-                detail: "vendor=Microsoft Hv",
-              },
-            ],
-          },
-        ],
-      },
-    }),
+    headers: monitoring.headers,
+    body: JSON.stringify(nativeRiskRequestBody),
   });
 
   assert.equal(nativeRiskResult.response.status, 201);
-  assert.equal(nativeRiskResult.body.signalCount, 2);
+  assert.equal(nativeRiskResult.body.signalCount, 3);
   assert.equal(nativeRiskResult.body.riskSummary.sessionId, sessionId);
   assert.equal(nativeRiskResult.body.riskSummary.reviewStatus, "pending_review");
-  assert.equal(nativeRiskResult.body.riskSummary.score, 0.6);
+  assert.equal(nativeRiskResult.body.riskSummary.score, 0.85);
   assert.deepEqual(nativeRiskResult.body.riskSummary.signalBreakdown, [
     {
       category: "native",
-      count: 2,
-      maxWeight: 0.6,
-      types: ["risk.native.capture_affinity", "risk.native.vm_signal"],
+      count: 3,
+      maxWeight: 0.85,
+      types: [
+        "risk.native.capture_affinity",
+        "risk.native.vm_signal",
+        "risk.native.prohibited_application",
+      ],
     },
   ]);
 
@@ -801,12 +2031,19 @@ test("session routes ignore clean native monitoring reports", async (t) => {
       },
     }),
   });
+  const monitoring = await startMonitoringForParticipant(
+    server,
+    sessionId,
+    joinResult.body.participant,
+    `native-clean-${testRunId}`,
+  );
 
   const nativeRiskResult = await jsonRequest(server, `/sessions/${sessionId}/native-risk-report`, {
     method: "POST",
-    headers: await authorizationHeader("candidate"),
+    headers: monitoring.headers,
     body: JSON.stringify({
       participantId: joinResult.body.participant.id,
+      monitoringConsentId: monitoring.monitoringConsentId,
       windowStartedAt: "2026-07-11T01:02:00.000Z",
       windowEndedAt: "2026-07-11T01:03:00.000Z",
       nativeReport: {

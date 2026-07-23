@@ -1,5 +1,10 @@
 import { type ReactElement } from "react";
-import { MonacoCollabEditor, type CodeExecutionResult, type EditorYjsDocument } from "@anecites/editor-core";
+import {
+  MonacoCollabEditor,
+  type CodeExecutionResult,
+  type EditorTelemetryEvent,
+  type EditorYjsDocument,
+} from "@anecites/editor-core";
 
 import {
   type CollabStatus,
@@ -7,6 +12,7 @@ import {
   type ExecutionMode,
   type ExecutionStatus,
 } from "./meeting-types.js";
+import { type LocalDemoEditorDocument } from "./local-demo.js";
 
 export interface CandidateEditorPanelProps {
   document: EditorYjsDocument;
@@ -18,8 +24,15 @@ export interface CandidateEditorPanelProps {
   executionStatus: ExecutionStatus;
   sessionId: string;
   participantId: string;
+  disablePaste: boolean;
+  documents: readonly LocalDemoEditorDocument[];
+  activeDocumentId: string;
+  creatingDocument: boolean;
   onCursorPositionChange: (position: EditorCursorPosition) => void;
   onExecute: (mode: ExecutionMode) => void;
+  onSelectDocument: (documentId: string) => void;
+  onCreateDocument: () => void;
+  onTelemetryEvent: (event: EditorTelemetryEvent) => void;
 }
 
 export function CandidateEditorPanel({
@@ -32,8 +45,15 @@ export function CandidateEditorPanel({
   executionStatus,
   sessionId,
   participantId,
+  disablePaste,
+  documents,
+  activeDocumentId,
+  creatingDocument,
   onCursorPositionChange,
   onExecute,
+  onSelectDocument,
+  onCreateDocument,
+  onTelemetryEvent,
 }: CandidateEditorPanelProps): ReactElement {
   const executionOutput = formatExecutionOutput(execution);
   const hasExecutionOutput = executionOutput.trim().length > 0;
@@ -44,6 +64,55 @@ export function CandidateEditorPanel({
         <div className="candidate-editor-title">
           <strong>Code editor</strong>
           <span>{languageLabel}</span>
+        </div>
+        <div className="candidate-editor-tabs" role="tablist" aria-label="Code editor tabs">
+          {documents.map((editorDocument, index) => (
+            <button
+              key={editorDocument.id}
+              type="button"
+              role="tab"
+              aria-selected={editorDocument.id === activeDocumentId}
+              tabIndex={editorDocument.id === activeDocumentId ? 0 : -1}
+              onClick={() => onSelectDocument(editorDocument.id)}
+              onKeyDown={(event) => {
+                const lastIndex = documents.length - 1;
+                const nextIndex = event.key === "ArrowRight"
+                  ? (index + 1) % documents.length
+                  : event.key === "ArrowLeft"
+                    ? (index - 1 + documents.length) % documents.length
+                    : event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? lastIndex
+                        : null;
+                if (nextIndex === null) {
+                  return;
+                }
+                event.preventDefault();
+                const nextDocument = documents[nextIndex];
+                if (!nextDocument) {
+                  return;
+                }
+                onSelectDocument(nextDocument.id);
+                const tabs = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+                  '[role="tab"]',
+                );
+                tabs?.[nextIndex]?.focus();
+              }}
+            >
+              {editorDocument.label}
+            </button>
+          ))}
+          <button
+            className="candidate-editor-add-tab"
+            type="button"
+            aria-label="New editor tab"
+            title="New editor tab"
+            onClick={onCreateDocument}
+            disabled={creatingDocument || documents.length >= 10}
+          >
+            +
+          </button>
         </div>
         <div className="candidate-editor-assist">
           <span>{formatCollabStatus(collabStatus)}</span>
@@ -65,11 +134,12 @@ export function CandidateEditorPanel({
           className="candidate-editor-host"
           document={document}
           language={language}
+          disablePaste={disablePaste}
           onCursorPositionChange={onCursorPositionChange}
           telemetry={{
             sessionId,
             participantId,
-            onEvent() {},
+            onEvent: onTelemetryEvent,
           }}
         />
       </div>

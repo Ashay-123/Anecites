@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useId,
   useRef,
@@ -36,6 +37,28 @@ type MonacoModule = typeof import("monaco-editor/esm/vs/editor/editor.api.js");
 type MonacoEditor = import("monaco-editor/esm/vs/editor/editor.api.js").editor.IStandaloneCodeEditor;
 type MonacoModel = import("monaco-editor/esm/vs/editor/editor.api.js").editor.ITextModel;
 
+export interface EditorTextChange {
+  rangeOffset: number;
+  rangeLength: number;
+  text: string;
+}
+
+interface MonacoPasteGuardEditor {
+  addAction(descriptor: {
+    id: string;
+    label: string;
+    keybindings: number[];
+    run: () => void | Promise<void>;
+  }): { dispose(): void };
+}
+
+export interface MonacoPasteGuardKeybindings {
+  ctrlCmd: number;
+  shift: number;
+  keyV: number;
+  insert: number;
+}
+
 interface MonacoEnvironmentLike {
   getWorker?: (_workerId: string, label: string) => Worker;
 }
@@ -57,21 +80,19 @@ export function MonacoCollabEditor(props: MonacoCollabEditorProps): ReactElement
   const lineNumbers = Array.from({ length: lineNumberCount }, (_, index) => index + 1);
   const monacoContainerRef = useRef<HTMLDivElement | null>(null);
   const fallbackTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const telemetryRef = useRef(telemetry);
   const [monacoReady, setMonacoReady] = useState(false);
   const reactId = useId();
+  telemetryRef.current = telemetry;
 
-  const emitPasteBlockedTelemetry = () => {
-    if (telemetry) {
-      telemetry.onEvent(createEditorPasteBlockedTelemetryEvent(document, telemetry));
+  const emitPasteBlockedTelemetry = useCallback(() => {
+    const currentTelemetry = telemetryRef.current;
+    if (currentTelemetry) {
+      currentTelemetry.onEvent(
+        createEditorPasteBlockedTelemetryEvent(document, currentTelemetry),
+      );
     }
-  };
-
-  const writeDocumentText = (nextValue: string) => {
-    document.doc.transact(() => {
-      document.text.delete(0, document.text.length);
-      document.text.insert(0, nextValue);
-    });
-  };
+  }, [document]);
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     if (!disablePaste) {
@@ -92,7 +113,7 @@ export function MonacoCollabEditor(props: MonacoCollabEditorProps): ReactElement
   };
 
   const handleChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-    writeDocumentText(event.target.value);
+    applyEditorTextValue(document, event.target.value);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -108,7 +129,7 @@ export function MonacoCollabEditor(props: MonacoCollabEditorProps): ReactElement
     target.value = nextValue;
     target.selectionStart = start + 2;
     target.selectionEnd = start + 2;
-    writeDocumentText(nextValue);
+    applyEditorTextValue(document, nextValue);
   };
 
   useEffect(() => {
@@ -124,6 +145,7 @@ export function MonacoCollabEditor(props: MonacoCollabEditorProps): ReactElement
     let removeTextObserver: (() => void) | null = null;
     let contentChangeSubscription: { dispose(): void } | null = null;
     let cursorPositionSubscription: { dispose(): void } | null = null;
+    let pasteGuardSubscription: { dispose(): void } | null = null;
     let ignoreMonacoChange = false;
 
     void loadMonaco().then((monaco) => {
@@ -164,6 +186,18 @@ export function MonacoCollabEditor(props: MonacoCollabEditorProps): ReactElement
         tabSize: 2,
         wordWrap: "off",
       });
+      pasteGuardSubscription = disablePaste
+        ? installMonacoPasteGuards(
+            editor,
+            {
+              ctrlCmd: monaco.KeyMod.CtrlCmd,
+              shift: monaco.KeyMod.Shift,
+              keyV: monaco.KeyCode.KeyV,
+              insert: monaco.KeyCode.Insert,
+            },
+            emitPasteBlockedTelemetry,
+          )
+        : null;
       onCursorPositionChange?.({
         lineNumber: editor.getPosition()?.lineNumber ?? 1,
         column: editor.getPosition()?.column ?? 1,
@@ -174,15 +208,12 @@ export function MonacoCollabEditor(props: MonacoCollabEditorProps): ReactElement
           column: event.position.column,
         });
       });
-      contentChangeSubscription = model.onDidChangeContent(() => {
-        if (!model || ignoreMonacoChange) {
+      contentChangeSubscription = model.onDidChangeContent((event) => {
+        if (ignoreMonacoChange) {
           return;
         }
 
-        const nextValue = model.getValue();
-        if (document.text.toString() !== nextValue) {
-          writeDocumentText(nextValue);
-        }
+        applyEditorTextChanges(document, event.changes);
       });
       const textObserver = (_event: YTextEvent) => {
         if (!model || model.getValue() === document.text.toString()) {
@@ -219,11 +250,12 @@ export function MonacoCollabEditor(props: MonacoCollabEditorProps): ReactElement
       setMonacoReady(false);
       contentChangeSubscription?.dispose();
       cursorPositionSubscription?.dispose();
+      pasteGuardSubscription?.dispose();
       removeTextObserver?.();
       editor?.dispose();
       model?.dispose();
     };
-  }, [document, language, onCursorPositionChange, readOnly, reactId]);
+  }, [disablePaste, document, emitPasteBlockedTelemetry, language, onCursorPositionChange, readOnly, reactId]);
 
   return (
     <div
@@ -270,6 +302,86 @@ export function MonacoCollabEditor(props: MonacoCollabEditorProps): ReactElement
       </div>
     </div>
   );
+}
+
+export function applyEditorTextChanges(
+  document: EditorYjsDocument,
+  changes: readonly EditorTextChange[],
+): void {
+  const orderedChanges = [...changes].sort((left, right) => right.rangeOffset - left.rangeOffset);
+  const currentLength = document.text.length;
+
+  for (const change of orderedChanges) {
+    if (
+      !Number.isInteger(change.rangeOffset) ||
+      !Number.isInteger(change.rangeLength) ||
+      change.rangeOffset < 0 ||
+      change.rangeLength < 0 ||
+      change.rangeOffset + change.rangeLength > currentLength
+    ) {
+      throw new Error("Editor text change range is invalid");
+    }
+  }
+
+  document.doc.transact(() => {
+    for (const change of orderedChanges) {
+      if (change.rangeLength > 0) {
+        document.text.delete(change.rangeOffset, change.rangeLength);
+      }
+      if (change.text.length > 0) {
+        document.text.insert(change.rangeOffset, change.text);
+      }
+    }
+  });
+}
+
+export function installMonacoPasteGuards(
+  editor: MonacoPasteGuardEditor,
+  keybindings: MonacoPasteGuardKeybindings,
+  onPasteBlocked: () => void,
+): { dispose(): void } {
+  return editor.addAction({
+    id: "editor.action.clipboardPasteAction",
+    label: "Paste disabled",
+    keybindings: [
+      keybindings.ctrlCmd | keybindings.keyV,
+      keybindings.shift | keybindings.insert,
+    ],
+    run: onPasteBlocked,
+  });
+}
+
+function applyEditorTextValue(document: EditorYjsDocument, nextValue: string): void {
+  const currentValue = document.text.toString();
+  if (currentValue === nextValue) {
+    return;
+  }
+
+  let prefixLength = 0;
+  const commonLength = Math.min(currentValue.length, nextValue.length);
+  while (
+    prefixLength < commonLength &&
+    currentValue[prefixLength] === nextValue[prefixLength]
+  ) {
+    prefixLength += 1;
+  }
+
+  let suffixLength = 0;
+  while (
+    suffixLength < commonLength - prefixLength &&
+    currentValue[currentValue.length - suffixLength - 1] ===
+      nextValue[nextValue.length - suffixLength - 1]
+  ) {
+    suffixLength += 1;
+  }
+
+  applyEditorTextChanges(document, [
+    {
+      rangeOffset: prefixLength,
+      rangeLength: currentValue.length - prefixLength - suffixLength,
+      text: nextValue.slice(prefixLength, nextValue.length - suffixLength),
+    },
+  ]);
 }
 
 async function loadMonaco(): Promise<MonacoModule> {

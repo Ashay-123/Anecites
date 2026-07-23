@@ -173,6 +173,35 @@ test("collab server isolates updates by session room", async () => {
   }
 });
 
+test("collab server isolates editor documents within the same session", async () => {
+  const server = await startServer();
+  const token = await mintToken("candidate-1", "candidate");
+
+  try {
+    const first = await connect(server.port, "session-a", token, {
+      documentId: "document-a",
+    });
+    const second = await connect(server.port, "session-a", token, {
+      documentId: "document-b",
+    });
+    await drainSnapshot(first);
+    await drainSnapshot(second);
+
+    first.send(JSON.stringify({ type: "sync:update", update: createTextUpdate("document a only") }));
+
+    await assert.rejects(
+      waitForMessage(second, "sync:update", 150),
+      /Timed out waiting for sync:update/,
+    );
+    assert.equal(server.roomCount(), 2);
+
+    first.close();
+    second.close();
+  } finally {
+    await server.close();
+  }
+});
+
 test("collab server handles 50 concurrent sessions without cross-session bleed", async () => {
   const server = await startServer();
   const token = await mintToken("candidate-1", "candidate");
@@ -296,7 +325,9 @@ test("collab server authorizes active persisted session participants", async () 
   const token = await mintToken("user-1", "candidate");
 
   try {
-    const socket = await connect(server.port, "session-a", token);
+    const socket = await connect(server.port, "session-a", token, {
+      documentId: "document-a",
+    });
     await drainSnapshot(socket);
 
     assert.equal(server.roomCount(), 1);
@@ -307,6 +338,13 @@ test("collab server authorizes active persisted session participants", async () 
           userId: "user-1",
           role: "CANDIDATE",
           leftAt: null,
+          session: {
+            editorDocuments: {
+              some: {
+                id: "document-a",
+              },
+            },
+          },
         },
         select: {
           id: true,
@@ -336,7 +374,7 @@ test("collab server rejects users without active persisted session membership", 
 
   try {
     const socket = new WebSocket(
-      `ws://127.0.0.1:${server.port}/collab?sessionId=session-a&token=${encodeURIComponent(token)}`,
+      `ws://127.0.0.1:${server.port}/collab?sessionId=session-a&documentId=document-a&token=${encodeURIComponent(token)}`,
     );
     const [code] = await once(socket, "close");
 
@@ -349,6 +387,13 @@ test("collab server rejects users without active persisted session membership", 
           userId: "outsider-1",
           role: "CANDIDATE",
           leftAt: null,
+          session: {
+            editorDocuments: {
+              some: {
+                id: "document-a",
+              },
+            },
+          },
         },
         select: {
           id: true,
@@ -451,6 +496,146 @@ test("collab telemetry flags simulated OS-level paste injection without a paste 
     assert.equal(aggregates[0].pasteBlockedCount, 0);
     assert.equal(aggregates[0].atomicInsertCount, 1);
     assert.equal(aggregates[0].maxInsertSize, 32);
+
+    socket.close();
+  } finally {
+    await server.close();
+  }
+});
+
+test("collab telemetry detects a large same-length replacement from the Yjs delta", async () => {
+  const rawEvents = [];
+  const aggregates = [];
+  const server = await startServer({
+    telemetry: {
+      atomicInsertThreshold: 10,
+      aggregateWindowMs: 0,
+      recordRawEvent: (event) => {
+        rawEvents.push(event);
+      },
+      flushAggregate: (aggregate) => {
+        aggregates.push(aggregate);
+      },
+      now: fixedClock("2026-07-17T10:00:00.000Z"),
+    },
+  });
+  const token = await mintToken("candidate-1", "candidate");
+  const clientDocument = new Y.Doc();
+  const clientText = clientDocument.getText("main");
+
+  try {
+    const socket = await connect(server.port, "session-a", token, {
+      documentId: "document-a",
+    });
+    await drainSnapshot(socket);
+
+    clientText.insert(0, "a".repeat(42));
+    socket.send(JSON.stringify({
+      type: "sync:update",
+      update: Buffer.from(Y.encodeStateAsUpdate(clientDocument)).toString("base64"),
+    }));
+    await waitUntil(() => aggregates.length === 1);
+    rawEvents.length = 0;
+    aggregates.length = 0;
+
+    const stateVector = Y.encodeStateVector(clientDocument);
+    clientDocument.transact(() => {
+      clientText.delete(0, 42);
+      clientText.insert(0, "b".repeat(42));
+    });
+    socket.send(JSON.stringify({
+      type: "sync:update",
+      update: Buffer.from(Y.encodeStateAsUpdate(clientDocument, stateVector)).toString("base64"),
+    }));
+    await waitUntil(() => rawEvents.length === 1 && aggregates.length === 1);
+
+    assert.equal(rawEvents[0].insertedCharacterCount, 42);
+    assert.equal(aggregates[0].insertEventCount, 1);
+    assert.equal(aggregates[0].deleteEventCount, 1);
+    assert.equal(aggregates[0].maxInsertSize, 42);
+
+    socket.close();
+  } finally {
+    clientDocument.destroy();
+    await server.close();
+  }
+});
+
+test("collab telemetry records authenticated paste-blocked markers with server context", async () => {
+  const rawEvents = [];
+  const aggregates = [];
+  const server = await startServer({
+    telemetry: {
+      aggregateWindowMs: 2_000,
+      recordRawEvent: (event) => {
+        rawEvents.push(event);
+      },
+      flushAggregate: (aggregate) => {
+        aggregates.push(aggregate);
+      },
+      now: fixedClock("2026-07-17T10:00:00.000Z"),
+    },
+  });
+  const token = await mintToken("candidate-1", "candidate");
+
+  try {
+    const socket = await connect(server.port, "session-a", token, {
+      documentId: "document-a",
+    });
+    await drainSnapshot(socket);
+
+    socket.send(JSON.stringify({ type: "telemetry:paste-blocked" }));
+    await waitUntil(() => rawEvents.length === 1 && aggregates.length === 1);
+
+    assert.deepEqual(rawEvents[0], {
+      kind: "raw",
+      type: "editor.paste_blocked",
+      storagePolicy: "object-storage-only",
+      sessionId: "session-a",
+      participantId: "candidate-1",
+      documentId: "document-a",
+      occurredAt: "2026-07-17T10:00:00.000Z",
+      source: "paste_event",
+    });
+    assert.equal(aggregates[0].pasteBlockedCount, 1);
+    assert.equal(aggregates[0].insertEventCount, 0);
+    assert.equal(aggregates[0].deleteEventCount, 0);
+    assert.equal(aggregates[0].atomicInsertCount, 0);
+    assert.equal(aggregates[0].maxInsertSize, 0);
+
+    socket.close();
+  } finally {
+    await server.close();
+  }
+});
+
+test("collab telemetry ignores paste-blocked markers from non-candidates", async () => {
+  const rawEvents = [];
+  const aggregates = [];
+  const server = await startServer({
+    telemetry: {
+      recordRawEvent: (event) => {
+        rawEvents.push(event);
+      },
+      flushAggregate: (aggregate) => {
+        aggregates.push(aggregate);
+      },
+    },
+  });
+  const token = await mintToken("interviewer-1", "interviewer");
+
+  try {
+    const socket = await connect(server.port, "session-a", token, {
+      documentId: "document-a",
+    });
+    await drainSnapshot(socket);
+
+    socket.send(JSON.stringify({ type: "telemetry:paste-blocked" }));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    assert.deepEqual(rawEvents, []);
+    assert.deepEqual(aggregates, []);
+    assert.equal(socket.readyState, WebSocket.OPEN);
 
     socket.close();
   } finally {

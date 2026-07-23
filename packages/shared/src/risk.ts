@@ -1,12 +1,19 @@
+import type { RollingEditorTelemetryAggregateInput } from "./telemetry.js";
+
 export const RISK_SIGNAL_TYPES = {
+  clientFocusLost: "risk.client.focus_lost",
+  editorPasteBlocked: "risk.editor.paste_blocked",
   editorAtomicInsert: "risk.editor.atomic_insert",
   mediaSecondVoice: "risk.media.second_voice",
   mediaFaceMissing: "risk.media.face_missing",
   mediaMultipleFaces: "risk.media.multiple_faces",
   mediaGazeOffscreen: "risk.media.gaze_offscreen",
   nativeCaptureAffinity: "risk.native.capture_affinity",
+  nativeRemoteSession: "risk.native.remote_session",
+  nativeDisplayTopologyChange: "risk.native.display_topology_change",
   nativeVmSignal: "risk.native.vm_signal",
-  timingLagLoop: "risk.timing.lag_loop",
+  nativeProhibitedApplication: "risk.native.prohibited_application",
+  timingResponseDelay: "risk.timing.response_delay",
 } as const;
 
 export type RiskSignalType = (typeof RISK_SIGNAL_TYPES)[keyof typeof RISK_SIGNAL_TYPES];
@@ -18,6 +25,7 @@ export const RISK_DECISION_POLICY = {
 } as const;
 
 export const RISK_SIGNAL_CATEGORIES = {
+  client: "client",
   editor: "editor",
   media: "media",
   native: "native",
@@ -50,14 +58,14 @@ export interface CompositeRiskSummary {
   signalBreakdown: CompositeRiskSignalBreakdown[];
 }
 
-export interface TimingLagSample {
-  occurredAt: string;
-  eventLoopLagMs: number;
+export interface ConversationalResponseTimingSample {
+  questionEndedAt: string;
+  answerStartedAt: string;
 }
 
-export interface LagLoopDetectionOptions {
+export interface ResponseDelayDetectionOptions {
   thresholdMs?: number;
-  minimumConsecutiveSamples?: number;
+  minimumDelayedResponses?: number;
 }
 
 export interface NativeCaptureAffinityReport {
@@ -77,10 +85,35 @@ export interface NativeVirtualizationReport {
   signals: readonly NativeVirtualizationSignal[];
 }
 
+export interface NativeEnvironmentReport {
+  platform: string;
+  remoteSession: boolean;
+  monitorCount: number;
+  previousMonitorCount?: number;
+}
+
+export const NATIVE_APPLICATION_MATCH_KINDS = ["process_name", "window_title"] as const;
+
+export type NativeApplicationMatchKind = (typeof NATIVE_APPLICATION_MATCH_KINDS)[number];
+
+export interface NativeApplicationDetectionRule {
+  id: string;
+  processNames: readonly string[];
+  windowTitleContains: readonly string[];
+}
+
+export interface NativeProhibitedApplicationMatch {
+  ruleId: string;
+  matchKinds: readonly NativeApplicationMatchKind[];
+  executableSha256?: string;
+}
+
 export interface NativeRiskSignalReport {
   occurredAt: string;
   captureAffinityReports?: readonly NativeCaptureAffinityReport[];
+  environmentReports?: readonly NativeEnvironmentReport[];
   virtualizationReports?: readonly NativeVirtualizationReport[];
+  prohibitedApplicationMatches?: readonly NativeProhibitedApplicationMatch[];
 }
 
 export interface MediaObservationBase {
@@ -124,17 +157,23 @@ export interface MediaRiskSignalReport {
 }
 
 const RISK_SIGNAL_CATEGORY_BY_TYPE: Record<RiskSignalType, RiskSignalCategory> = {
+  [RISK_SIGNAL_TYPES.clientFocusLost]: RISK_SIGNAL_CATEGORIES.client,
+  [RISK_SIGNAL_TYPES.editorPasteBlocked]: RISK_SIGNAL_CATEGORIES.editor,
   [RISK_SIGNAL_TYPES.editorAtomicInsert]: RISK_SIGNAL_CATEGORIES.editor,
   [RISK_SIGNAL_TYPES.mediaSecondVoice]: RISK_SIGNAL_CATEGORIES.media,
   [RISK_SIGNAL_TYPES.mediaFaceMissing]: RISK_SIGNAL_CATEGORIES.media,
   [RISK_SIGNAL_TYPES.mediaMultipleFaces]: RISK_SIGNAL_CATEGORIES.media,
   [RISK_SIGNAL_TYPES.mediaGazeOffscreen]: RISK_SIGNAL_CATEGORIES.media,
   [RISK_SIGNAL_TYPES.nativeCaptureAffinity]: RISK_SIGNAL_CATEGORIES.native,
+  [RISK_SIGNAL_TYPES.nativeRemoteSession]: RISK_SIGNAL_CATEGORIES.native,
+  [RISK_SIGNAL_TYPES.nativeDisplayTopologyChange]: RISK_SIGNAL_CATEGORIES.native,
   [RISK_SIGNAL_TYPES.nativeVmSignal]: RISK_SIGNAL_CATEGORIES.native,
-  [RISK_SIGNAL_TYPES.timingLagLoop]: RISK_SIGNAL_CATEGORIES.timing,
+  [RISK_SIGNAL_TYPES.nativeProhibitedApplication]: RISK_SIGNAL_CATEGORIES.native,
+  [RISK_SIGNAL_TYPES.timingResponseDelay]: RISK_SIGNAL_CATEGORIES.timing,
 };
 
 const RISK_SIGNAL_CATEGORY_ORDER: RiskSignalCategory[] = [
+  RISK_SIGNAL_CATEGORIES.client,
   RISK_SIGNAL_CATEGORIES.editor,
   RISK_SIGNAL_CATEGORIES.media,
   RISK_SIGNAL_CATEGORIES.native,
@@ -143,8 +182,8 @@ const RISK_SIGNAL_CATEGORY_ORDER: RiskSignalCategory[] = [
 
 const RISK_SIGNAL_TYPE_ORDER = Object.values(RISK_SIGNAL_TYPES);
 
-const DEFAULT_LAG_LOOP_THRESHOLD_MS = 150;
-const DEFAULT_LAG_LOOP_MINIMUM_CONSECUTIVE_SAMPLES = 3;
+const DEFAULT_RESPONSE_DELAY_THRESHOLD_MS = 3_000;
+const DEFAULT_MINIMUM_DELAYED_RESPONSES = 3;
 const MINIMUM_SECOND_VOICE_CONFIDENCE = 0.8;
 const MINIMUM_SECOND_VOICE_DURATION_MS = 2_000;
 const MINIMUM_FACE_MISSING_CONFIDENCE = 0.8;
@@ -153,6 +192,78 @@ const MINIMUM_MULTIPLE_FACES_CONFIDENCE = 0.8;
 const MINIMUM_MULTIPLE_FACES_DURATION_MS = 1_000;
 const MINIMUM_GAZE_OFFSCREEN_CONFIDENCE = 0.85;
 const MINIMUM_GAZE_OFFSCREEN_DURATION_MS = 2_500;
+const MAX_NATIVE_APPLICATION_RULES = 100;
+const MAX_NATIVE_APPLICATION_MATCHERS_PER_RULE = 20;
+const MAX_NATIVE_APPLICATION_MATCHER_LENGTH = 128;
+const NATIVE_APPLICATION_RULE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
+
+export function createNativeApplicationDetectionRules(value: unknown): NativeApplicationDetectionRule[] {
+  if (!Array.isArray(value)) {
+    throw new Error("Prohibited application rules must be an array");
+  }
+  if (value.length > MAX_NATIVE_APPLICATION_RULES) {
+    throw new Error(`Prohibited application rules cannot exceed ${MAX_NATIVE_APPLICATION_RULES}`);
+  }
+
+  const seenRuleIds = new Set<string>();
+  return value.map((candidate, index) => {
+    const record = requireUnknownRecord(`rule ${index}`, candidate);
+    const id = normalizeNativeApplicationRuleId(record.id);
+    if (seenRuleIds.has(id)) {
+      throw new Error(`Prohibited application rule id ${id} is duplicated`);
+    }
+    seenRuleIds.add(id);
+
+    const processNames = normalizeNativeApplicationMatchers(
+      record.processNames,
+      `rule ${id} processNames`,
+      1,
+      true,
+    );
+    const windowTitleContains = normalizeNativeApplicationMatchers(
+      record.windowTitleContains,
+      `rule ${id} windowTitleContains`,
+      3,
+      false,
+    );
+    if (processNames.length === 0 && windowTitleContains.length === 0) {
+      throw new Error(`Prohibited application rule ${id} must contain at least one matcher`);
+    }
+
+    return {
+      id,
+      processNames,
+      windowTitleContains,
+    };
+  });
+}
+
+export function createNativeProhibitedApplicationMatch(value: unknown): NativeProhibitedApplicationMatch {
+  const record = requireUnknownRecord("prohibited application match", value);
+  const ruleId = normalizeNativeApplicationRuleId(record.ruleId);
+  if (!Array.isArray(record.matchKinds) || record.matchKinds.length === 0) {
+    throw new Error("Prohibited application matchKinds must be a non-empty array");
+  }
+
+  const matchKinds = Array.from(new Set(record.matchKinds.map((candidate) => {
+    if (
+      typeof candidate !== "string" ||
+      !(NATIVE_APPLICATION_MATCH_KINDS as readonly string[]).includes(candidate)
+    ) {
+      throw new Error("Prohibited application match kind is not supported");
+    }
+    return candidate as NativeApplicationMatchKind;
+  })));
+
+  return {
+    ruleId,
+    matchKinds,
+    ...(record.executableSha256 === undefined
+      ? {}
+      : { executableSha256: normalizeSha256(record.executableSha256) }),
+  };
+}
 
 export function buildCompositeRiskSummary(signals: readonly RiskSignalInput[]): CompositeRiskSummary {
   if (!Array.isArray(signals)) {
@@ -221,56 +332,109 @@ export function buildCompositeRiskSummary(signals: readonly RiskSignalInput[]): 
   };
 }
 
-export function detectLagLoopRiskSignal(
-  samples: readonly TimingLagSample[],
-  options: LagLoopDetectionOptions = {},
+export function detectResponseDelayRiskSignal(
+  samples: readonly ConversationalResponseTimingSample[],
+  options: ResponseDelayDetectionOptions = {},
 ): RiskSignalInput | null {
   if (!Array.isArray(samples)) {
-    throw new Error("Timing lag samples must be an array");
+    throw new Error("Conversational timing samples must be an array");
   }
 
-  const thresholdMs = options.thresholdMs ?? DEFAULT_LAG_LOOP_THRESHOLD_MS;
-  const minimumConsecutiveSamples =
-    options.minimumConsecutiveSamples ?? DEFAULT_LAG_LOOP_MINIMUM_CONSECUTIVE_SAMPLES;
+  const thresholdMs = options.thresholdMs ?? DEFAULT_RESPONSE_DELAY_THRESHOLD_MS;
+  const minimumDelayedResponses =
+    options.minimumDelayedResponses ?? DEFAULT_MINIMUM_DELAYED_RESPONSES;
   requirePositiveNumber("thresholdMs", thresholdMs);
-  requirePositiveInteger("minimumConsecutiveSamples", minimumConsecutiveSamples);
+  requirePositiveInteger("minimumDelayedResponses", minimumDelayedResponses);
 
-  let consecutiveLagCount = 0;
-  let maxConsecutiveLagCount = 0;
-  let maxLagMs = 0;
-  let lastLagOccurredAt: string | null = null;
+  const delayedResponses: Array<{ delayMs: number; answerStartedAt: string }> = [];
 
   for (const sample of samples) {
-    requireRiskSignalTimestamp(sample.occurredAt);
-    requireNonNegativeNumber("eventLoopLagMs", sample.eventLoopLagMs);
-
-    if (sample.eventLoopLagMs >= thresholdMs) {
-      consecutiveLagCount += 1;
-      maxConsecutiveLagCount = Math.max(maxConsecutiveLagCount, consecutiveLagCount);
-      maxLagMs = Math.max(maxLagMs, sample.eventLoopLagMs);
-      lastLagOccurredAt = sample.occurredAt;
-      continue;
+    requireNamedTimestamp("questionEndedAt", sample.questionEndedAt);
+    requireNamedTimestamp("answerStartedAt", sample.answerStartedAt);
+    const delayMs = Date.parse(sample.answerStartedAt) - Date.parse(sample.questionEndedAt);
+    if (delayMs <= 0) {
+      throw new Error("answerStartedAt must be after questionEndedAt");
     }
-
-    consecutiveLagCount = 0;
+    if (delayMs >= thresholdMs) {
+      delayedResponses.push({ delayMs, answerStartedAt: sample.answerStartedAt });
+    }
   }
 
-  if (maxConsecutiveLagCount < minimumConsecutiveSamples || !lastLagOccurredAt) {
+  if (delayedResponses.length < minimumDelayedResponses) {
+    return null;
+  }
+
+  const sortedDelays = delayedResponses.map((sample) => sample.delayMs).sort((left, right) => left - right);
+  const medianIndex = Math.floor(sortedDelays.length / 2);
+  const medianResponseDelayMs = sortedDelays.length % 2 === 0
+    ? Math.round((sortedDelays[medianIndex - 1]! + sortedDelays[medianIndex]!) / 2)
+    : sortedDelays[medianIndex]!;
+  const occurredAt = delayedResponses
+    .map((sample) => sample.answerStartedAt)
+    .sort((left, right) => Date.parse(left) - Date.parse(right))
+    .at(-1);
+
+  if (!occurredAt) {
     return null;
   }
 
   return {
-    type: RISK_SIGNAL_TYPES.timingLagLoop,
-    weight: roundRiskScore(Math.min(1, maxLagMs / (thresholdMs * 2) * 0.75)),
-    occurredAt: lastLagOccurredAt,
+    type: RISK_SIGNAL_TYPES.timingResponseDelay,
+    weight: 0.45,
+    occurredAt,
     metadata: {
       sampleCount: samples.length,
+      delayedResponseCount: delayedResponses.length,
       thresholdMs,
-      minimumConsecutiveSamples,
-      consecutiveLagCount: maxConsecutiveLagCount,
-      maxLagMs,
+      medianResponseDelayMs,
     },
   };
+}
+
+export function createEditorRiskSignals(
+  aggregate: RollingEditorTelemetryAggregateInput,
+): RiskSignalInput[] {
+  requireNonEmptyString("sessionId", aggregate.sessionId);
+  requireNonEmptyString("participantId", aggregate.participantId);
+  const documentId = requireNonEmptyString("documentId", aggregate.documentId);
+  requireNamedTimestamp("windowStartedAt", aggregate.windowStartedAt);
+  requireNamedTimestamp("windowEndedAt", aggregate.windowEndedAt);
+  if (Date.parse(aggregate.windowEndedAt) <= Date.parse(aggregate.windowStartedAt)) {
+    throw new Error("windowEndedAt must be after windowStartedAt");
+  }
+
+  requireNonNegativeInteger("insertEventCount", aggregate.insertEventCount);
+  requireNonNegativeInteger("deleteEventCount", aggregate.deleteEventCount);
+  requireNonNegativeInteger("pasteBlockedCount", aggregate.pasteBlockedCount);
+  requireNonNegativeInteger("atomicInsertCount", aggregate.atomicInsertCount);
+  requireNonNegativeInteger("maxInsertSize", aggregate.maxInsertSize);
+
+  const signals: RiskSignalInput[] = [];
+  if (aggregate.pasteBlockedCount > 0) {
+    signals.push({
+      type: RISK_SIGNAL_TYPES.editorPasteBlocked,
+      weight: roundRiskScore(Math.min(0.85, 0.6 + aggregate.pasteBlockedCount * 0.05)),
+      occurredAt: aggregate.windowEndedAt,
+      metadata: {
+        documentId,
+        pasteBlockedCount: aggregate.pasteBlockedCount,
+      },
+    });
+  }
+  if (aggregate.atomicInsertCount > 0) {
+    signals.push({
+      type: RISK_SIGNAL_TYPES.editorAtomicInsert,
+      weight: roundRiskScore(Math.min(0.9, 0.5 + Math.min(aggregate.maxInsertSize, 160) / 400)),
+      occurredAt: aggregate.windowEndedAt,
+      metadata: {
+        documentId,
+        atomicInsertCount: aggregate.atomicInsertCount,
+        maxInsertSize: aggregate.maxInsertSize,
+      },
+    });
+  }
+
+  return signals;
 }
 
 export function createNativeRiskSignals(report: NativeRiskSignalReport): RiskSignalInput[] {
@@ -278,6 +442,7 @@ export function createNativeRiskSignals(report: NativeRiskSignalReport): RiskSig
 
   const riskSignals: RiskSignalInput[] = [];
   const captureAffinityReports = report.captureAffinityReports ?? [];
+  const environmentReports = report.environmentReports ?? [];
   const virtualizationReports = report.virtualizationReports ?? [];
 
   for (const captureReport of captureAffinityReports) {
@@ -293,6 +458,39 @@ export function createNativeRiskSignals(report: NativeRiskSignalReport): RiskSig
           platform,
           windowId,
           protectedFromCapture: true,
+        },
+      });
+    }
+  }
+
+  for (const environmentReport of environmentReports) {
+    const platform = requireNonEmptyString("platform", environmentReport.platform);
+    const monitorCount = requireMinimumInteger("monitorCount", environmentReport.monitorCount, 1);
+    const previousMonitorCount = environmentReport.previousMonitorCount === undefined
+      ? undefined
+      : requireMinimumInteger("previousMonitorCount", environmentReport.previousMonitorCount, 1);
+
+    if (environmentReport.remoteSession === true) {
+      riskSignals.push({
+        type: RISK_SIGNAL_TYPES.nativeRemoteSession,
+        weight: 0.8,
+        occurredAt: report.occurredAt,
+        metadata: {
+          platform,
+          remoteSession: true,
+        },
+      });
+    }
+
+    if (previousMonitorCount !== undefined && previousMonitorCount !== monitorCount) {
+      riskSignals.push({
+        type: RISK_SIGNAL_TYPES.nativeDisplayTopologyChange,
+        weight: 0.45,
+        occurredAt: report.occurredAt,
+        metadata: {
+          platform,
+          previousMonitorCount,
+          monitorCount,
         },
       });
     }
@@ -318,7 +516,7 @@ export function createNativeRiskSignals(report: NativeRiskSignalReport): RiskSig
     if (detectedSignals.length > 0) {
       riskSignals.push({
         type: RISK_SIGNAL_TYPES.nativeVmSignal,
-        weight: roundRiskScore(Math.min(1, 0.4 + detectedSignals.length * 0.1)),
+        weight: roundRiskScore(Math.min(0.95, 0.35 + (detectedSignals.length - 1) * 0.3)),
         occurredAt: report.occurredAt,
         metadata: {
           platform,
@@ -326,6 +524,28 @@ export function createNativeRiskSignals(report: NativeRiskSignalReport): RiskSig
         },
       });
     }
+  }
+
+  for (const rawMatch of report.prohibitedApplicationMatches ?? []) {
+    const match = createNativeProhibitedApplicationMatch(rawMatch);
+    const processNameMatched = match.matchKinds.includes("process_name");
+    const windowTitleMatched = match.matchKinds.includes("window_title");
+    const weight = processNameMatched && windowTitleMatched
+      ? 0.85
+      : processNameMatched
+        ? 0.75
+        : 0.5;
+
+    riskSignals.push({
+      type: RISK_SIGNAL_TYPES.nativeProhibitedApplication,
+      weight,
+      occurredAt: report.occurredAt,
+      metadata: {
+        ruleId: match.ruleId,
+        matchKinds: [...match.matchKinds],
+        ...(match.executableSha256 ? { executableSha256: match.executableSha256 } : {}),
+      },
+    });
   }
 
   return riskSignals;
@@ -353,7 +573,7 @@ export function createMediaRiskSignals(report: MediaRiskSignalReport): RiskSigna
       riskSignals.push({
         type: RISK_SIGNAL_TYPES.mediaSecondVoice,
         weight: roundRiskScore(Math.min(1, 0.4 + observation.confidence * 0.5)),
-        occurredAt: report.occurredAt,
+        occurredAt: observation.sampleEndedAt,
         ...(evidenceObjectId ? { evidenceObjectId } : {}),
         metadata: createMediaMetadata(observation, {
           speakerCount,
@@ -373,7 +593,7 @@ export function createMediaRiskSignals(report: MediaRiskSignalReport): RiskSigna
         riskSignals.push({
           type: RISK_SIGNAL_TYPES.mediaFaceMissing,
           weight: roundRiskScore(Math.min(1, 0.4 + observation.confidence * 0.4)),
-          occurredAt: report.occurredAt,
+          occurredAt: observation.sampleEndedAt,
           ...(evidenceObjectId ? { evidenceObjectId } : {}),
           metadata: createMediaMetadata(observation),
         });
@@ -390,7 +610,7 @@ export function createMediaRiskSignals(report: MediaRiskSignalReport): RiskSigna
         riskSignals.push({
           type: RISK_SIGNAL_TYPES.mediaMultipleFaces,
           weight: roundRiskScore(Math.min(1, 0.4 + observation.confidence * 0.5)),
-          occurredAt: report.occurredAt,
+          occurredAt: observation.sampleEndedAt,
           ...(evidenceObjectId ? { evidenceObjectId } : {}),
           metadata: createMediaMetadata(observation, {
             faceCount,
@@ -412,7 +632,7 @@ export function createMediaRiskSignals(report: MediaRiskSignalReport): RiskSigna
         riskSignals.push({
           type: RISK_SIGNAL_TYPES.mediaGazeOffscreen,
           weight: roundRiskScore(Math.min(1, 0.4 + observation.confidence * 0.45)),
-          occurredAt: report.occurredAt,
+          occurredAt: observation.sampleEndedAt,
           ...(evidenceObjectId ? { evidenceObjectId } : {}),
           metadata: createMediaMetadata(observation, calibrationId ? { calibrationId } : {}),
         });
@@ -491,6 +711,12 @@ function requireRiskSignalTimestamp(occurredAt: string): void {
   }
 }
 
+function requireNamedTimestamp(fieldName: string, value: string): void {
+  if (typeof value !== "string" || Number.isNaN(Date.parse(value))) {
+    throw new Error(`${fieldName} must be a valid timestamp`);
+  }
+}
+
 function requirePositiveNumber(fieldName: string, value: number): void {
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`${fieldName} must be positive`);
@@ -503,9 +729,9 @@ function requirePositiveInteger(fieldName: string, value: number): void {
   }
 }
 
-function requireNonNegativeNumber(fieldName: string, value: number): void {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new Error(`${fieldName} must be a non-negative number`);
+function requireNonNegativeInteger(fieldName: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${fieldName} must be a non-negative integer`);
   }
 }
 
@@ -515,6 +741,67 @@ function requireNonEmptyString(fieldName: string, value: string): string {
   }
 
   return value.trim();
+}
+
+function requireUnknownRecord(fieldName: string, value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizeNativeApplicationRuleId(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("Prohibited application rule id must be a non-empty string");
+  }
+  const id = value.trim().toLowerCase();
+  if (!NATIVE_APPLICATION_RULE_ID_PATTERN.test(id)) {
+    throw new Error("Prohibited application rule id must contain only lowercase letters, numbers, dots, underscores, or hyphens");
+  }
+  return id;
+}
+
+function normalizeNativeApplicationMatchers(
+  value: unknown,
+  fieldName: string,
+  minimumLength: number,
+  rejectPathSeparators: boolean,
+): string[] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array`);
+  }
+  if (value.length > MAX_NATIVE_APPLICATION_MATCHERS_PER_RULE) {
+    throw new Error(`${fieldName} cannot exceed ${MAX_NATIVE_APPLICATION_MATCHERS_PER_RULE} entries`);
+  }
+
+  const normalized = value.map((candidate) => {
+    if (typeof candidate !== "string") {
+      throw new Error(`${fieldName} must contain only strings`);
+    }
+    const matcher = candidate.trim().toLowerCase();
+    if (matcher.length < minimumLength || matcher.length > MAX_NATIVE_APPLICATION_MATCHER_LENGTH) {
+      throw new Error(`${fieldName} entries must be between ${minimumLength} and ${MAX_NATIVE_APPLICATION_MATCHER_LENGTH} characters`);
+    }
+    if (CONTROL_CHARACTER_PATTERN.test(matcher)) {
+      throw new Error(`${fieldName} entries cannot contain control characters`);
+    }
+    if (rejectPathSeparators && (matcher.includes("/") || matcher.includes("\\"))) {
+      throw new Error(`${fieldName} entries must be executable basenames, not paths`);
+    }
+    return matcher;
+  });
+
+  return Array.from(new Set(normalized));
+}
+
+function normalizeSha256(value: unknown): string {
+  if (typeof value !== "string" || !/^[a-fA-F0-9]{64}$/.test(value.trim())) {
+    throw new Error("Executable SHA-256 must contain exactly 64 hexadecimal characters");
+  }
+  return value.trim().toLowerCase();
 }
 
 function roundRiskScore(score: number): number {

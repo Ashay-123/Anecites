@@ -312,6 +312,46 @@
   margin: 0;
 }
 
+.review-evidence-player {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.review-evidence-player video {
+  width: 100%;
+  max-height: 320px;
+  background: #05080f;
+}
+
+.review-evidence-player p {
+  margin: 0;
+  color: var(--muted-text, #5f7190);
+  font-size: 13px;
+}
+
+.review-correlation-status {
+  color: var(--foreground) !important;
+  font-weight: 600;
+}
+
+.review-signal-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-signal-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+
 .review-item-actions {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }

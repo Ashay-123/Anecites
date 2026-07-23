@@ -1,7 +1,9 @@
 import {
   createAtomicInsertTelemetryEvent,
+  createPasteBlockedTelemetryEvent,
   createRollingEditorTelemetryAggregate,
   type AtomicInsertTelemetryEvent,
+  type PasteBlockedTelemetryEvent,
   type RollingEditorTelemetryAggregate,
 } from "@anecites/shared";
 import { type PrismaClient } from "@anecites/db";
@@ -13,12 +15,13 @@ export interface CollabTelemetryOptions {
   aggregateWindowMs?: number;
   textName?: string;
   now?: () => Date;
-  recordRawEvent?: (event: AtomicInsertTelemetryEvent) => void | Promise<void>;
+  recordRawEvent?: (event: EditorRawTelemetryEvent) => void | Promise<void>;
   flushAggregate?: (aggregate: RollingEditorTelemetryAggregate) => void | Promise<void>;
 }
 
 export interface CollabTelemetryContext {
   sessionId: string;
+  participantId: string;
   documentId: string;
   principal: AuthenticatedPrincipal;
 }
@@ -33,8 +36,12 @@ export type TelemetryAggregateSink = (
 ) => Promise<void>;
 
 export type TelemetryRawEventSink = (
-  event: AtomicInsertTelemetryEvent,
+  event: EditorRawTelemetryEvent,
 ) => Promise<void>;
+
+export type EditorRawTelemetryEvent =
+  | AtomicInsertTelemetryEvent
+  | PasteBlockedTelemetryEvent;
 
 export interface RedisRawTelemetryClient {
   xAdd(
@@ -77,7 +84,7 @@ export function trackYjsTextChange(
       options.recordRawEvent,
       createAtomicInsertTelemetryEvent({
         sessionId: context.sessionId,
-        participantId: context.principal.subject,
+        participantId: context.participantId,
         documentId: context.documentId,
         occurredAt: now.toISOString(),
         insertedCharacterCount,
@@ -92,6 +99,7 @@ export function trackYjsTextChange(
     options.flushAggregate,
     createRollingEditorTelemetryAggregate({
       sessionId: context.sessionId,
+      participantId: context.participantId,
       documentId: context.documentId,
       windowStartedAt: window.startedAt,
       windowEndedAt: window.endedAt,
@@ -100,6 +108,44 @@ export function trackYjsTextChange(
       pasteBlockedCount: 0,
       atomicInsertCount: isAtomicInsert ? 1 : 0,
       maxInsertSize: insertedCharacterCount,
+    }),
+  );
+}
+
+export function trackPasteBlocked(
+  context: CollabTelemetryContext,
+  options: CollabTelemetryOptions | undefined,
+): void {
+  if (!options) {
+    return;
+  }
+
+  const now = options.now?.() ?? new Date();
+  runBestEffortTelemetrySink(
+    options.recordRawEvent,
+    createPasteBlockedTelemetryEvent({
+      sessionId: context.sessionId,
+      participantId: context.participantId,
+      documentId: context.documentId,
+      occurredAt: now.toISOString(),
+      source: "paste_event",
+    }),
+  );
+
+  const window = telemetryWindow(now, options.aggregateWindowMs ?? defaultAggregateWindowMs);
+  runBestEffortTelemetrySink(
+    options.flushAggregate,
+    createRollingEditorTelemetryAggregate({
+      sessionId: context.sessionId,
+      participantId: context.participantId,
+      documentId: context.documentId,
+      windowStartedAt: window.startedAt,
+      windowEndedAt: window.endedAt,
+      insertEventCount: 0,
+      deleteEventCount: 0,
+      pasteBlockedCount: 1,
+      atomicInsertCount: 0,
+      maxInsertSize: 0,
     }),
   );
 }
@@ -137,7 +183,8 @@ export function createPrismaTelemetryAggregateSink(prisma: PrismaClient): Teleme
     const windowStartedAt = new Date(aggregate.windowStartedAt);
     const windowEndedAt = new Date(aggregate.windowEndedAt);
     const where = {
-      documentId_windowStartedAt_windowEndedAt: {
+      participantId_documentId_windowStartedAt_windowEndedAt: {
+        participantId: aggregate.participantId,
         documentId: aggregate.documentId,
         windowStartedAt,
         windowEndedAt,
@@ -156,6 +203,7 @@ export function createPrismaTelemetryAggregateSink(prisma: PrismaClient): Teleme
         await transaction.editorTelemetryAggregate.create({
           data: {
             sessionId: aggregate.sessionId,
+            participantId: aggregate.participantId,
             documentId: aggregate.documentId,
             windowStartedAt,
             windowEndedAt,
@@ -198,7 +246,7 @@ export function createRedisRawTelemetrySink(
   const streamKey = options.streamKey ?? defaultRawTelemetryStreamKey;
 
   return async (event) => {
-    await redis.xAdd(streamKey, "*", {
+    const fields = {
       type: event.type,
       kind: event.kind,
       storagePolicy: event.storagePolicy,
@@ -206,8 +254,18 @@ export function createRedisRawTelemetrySink(
       participantId: event.participantId,
       documentId: event.documentId,
       occurredAt: event.occurredAt,
-      insertedCharacterCount: String(event.insertedCharacterCount),
       source: event.source,
-    });
+    };
+
+    await redis.xAdd(
+      streamKey,
+      "*",
+      event.type === "editor.atomic_insert"
+        ? {
+            ...fields,
+            insertedCharacterCount: String(event.insertedCharacterCount),
+          }
+        : fields,
+    );
   };
 }

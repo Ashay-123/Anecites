@@ -1,7 +1,9 @@
 pub mod capture_affinity;
 pub mod commands;
+pub mod environment;
 pub mod platform;
 pub mod process_scanner;
+pub mod prohibited_applications;
 pub mod types;
 pub mod virtualization;
 pub mod window_monitor;

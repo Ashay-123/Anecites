@@ -8,7 +8,7 @@ const PRINCIPAL_ROLE_TO_PARTICIPANT_ROLE = {
 } as const;
 
 export function createSessionParticipantAuthorizer(prisma: PrismaClient): AuthorizeRoom {
-  return async (principal, sessionId) => {
+  return async (principal, sessionId, documentId) => {
     const participantRole = toParticipantRole(principal.role);
 
     if (!participantRole) {
@@ -21,13 +21,20 @@ export function createSessionParticipantAuthorizer(prisma: PrismaClient): Author
         userId: principal.subject,
         role: participantRole,
         leftAt: null,
+        session: {
+          editorDocuments: {
+            some: {
+              id: documentId,
+            },
+          },
+        },
       },
       select: {
         id: true,
       },
     });
 
-    return participant !== null;
+    return participant ? { participantId: participant.id } : false;
   };
 }
 

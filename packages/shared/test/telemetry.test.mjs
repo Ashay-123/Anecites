@@ -50,6 +50,7 @@ test("paste blocked telemetry is object-storage-only, not Postgres", () => {
 test("rolling editor aggregates are the Postgres-eligible telemetry shape", () => {
   const aggregate = createRollingEditorTelemetryAggregate({
     sessionId: "session-1",
+    participantId: "participant-1",
     documentId: "document-1",
     windowStartedAt: "2026-07-07T12:00:00.000Z",
     windowEndedAt: "2026-07-07T12:00:02.000Z",
@@ -61,6 +62,7 @@ test("rolling editor aggregates are the Postgres-eligible telemetry shape", () =
   });
 
   assert.equal(aggregate.storagePolicy, TELEMETRY_STORAGE_POLICIES.postgresAggregate);
+  assert.equal(aggregate.participantId, "participant-1");
   assert.equal(shouldPersistTelemetryToPostgres(aggregate), true);
 });
 

@@ -3,22 +3,72 @@ import assert from "node:assert/strict";
 
 import {
   buildCompositeRiskSummary,
+  createNativeApplicationDetectionRules,
+  createNativeProhibitedApplicationMatch,
   createMediaRiskSignals,
   createNativeRiskSignals,
-  detectLagLoopRiskSignal,
+  createEditorRiskSignals,
+  detectResponseDelayRiskSignal,
   NATIVE_PERMISSION_SCOPES,
   RISK_DECISION_POLICY,
   RISK_SIGNAL_TYPES,
 } from "../dist/index.js";
 
-test("risk signal types cover editor, media, native, and timing inputs", () => {
+test("risk signal types cover client, editor, media, native, and timing inputs", () => {
+  assert.equal(RISK_SIGNAL_TYPES.clientFocusLost, "risk.client.focus_lost");
   assert.equal(RISK_SIGNAL_TYPES.editorAtomicInsert, "risk.editor.atomic_insert");
   assert.equal(RISK_SIGNAL_TYPES.mediaSecondVoice, "risk.media.second_voice");
   assert.equal(RISK_SIGNAL_TYPES.mediaFaceMissing, "risk.media.face_missing");
   assert.equal(RISK_SIGNAL_TYPES.mediaMultipleFaces, "risk.media.multiple_faces");
   assert.equal(RISK_SIGNAL_TYPES.mediaGazeOffscreen, "risk.media.gaze_offscreen");
   assert.equal(RISK_SIGNAL_TYPES.nativeCaptureAffinity, "risk.native.capture_affinity");
-  assert.equal(RISK_SIGNAL_TYPES.timingLagLoop, "risk.timing.lag_loop");
+  assert.equal(RISK_SIGNAL_TYPES.nativeRemoteSession, "risk.native.remote_session");
+  assert.equal(RISK_SIGNAL_TYPES.nativeDisplayTopologyChange, "risk.native.display_topology_change");
+  assert.equal(RISK_SIGNAL_TYPES.nativeProhibitedApplication, "risk.native.prohibited_application");
+  assert.equal(RISK_SIGNAL_TYPES.editorPasteBlocked, "risk.editor.paste_blocked");
+  assert.equal(RISK_SIGNAL_TYPES.timingResponseDelay, "risk.timing.response_delay");
+});
+
+test("prohibited application rules are bounded and normalized without regex matching", () => {
+  assert.deepEqual(createNativeApplicationDetectionRules([
+    {
+      id: " Interview.Assistant ",
+      processNames: ["Assistant.EXE", "assistant.exe"],
+      windowTitleContains: [" Interview Helper "],
+    },
+  ]), [
+    {
+      id: "interview.assistant",
+      processNames: ["assistant.exe"],
+      windowTitleContains: ["interview helper"],
+    },
+  ]);
+
+  assert.deepEqual(createNativeProhibitedApplicationMatch({
+    ruleId: "INTERVIEW.ASSISTANT",
+    matchKinds: ["process_name", "window_title", "process_name"],
+  }), {
+    ruleId: "interview.assistant",
+    matchKinds: ["process_name", "window_title"],
+  });
+
+  assert.throws(
+    () => createNativeApplicationDetectionRules([{ id: "empty-rule", processNames: [] }]),
+    /must contain at least one matcher/,
+  );
+  assert.throws(
+    () => createNativeApplicationDetectionRules([{ id: "path-rule", processNames: ["C:\\tools\\assistant.exe"] }]),
+    /executable basenames, not paths/,
+  );
+  assert.throws(
+    () => createNativeProhibitedApplicationMatch({ ruleId: "rule-1", matchKinds: ["unknown"] }),
+    /match kind is not supported/,
+  );
+  assert.equal(createNativeProhibitedApplicationMatch({
+    ruleId: "rule-1",
+    matchKinds: ["process_name"],
+    executableSha256: "A".repeat(64),
+  }).executableSha256, "a".repeat(64));
 });
 
 test("risk policy requires composite human-reviewed decisions", () => {
@@ -110,7 +160,7 @@ test("composite risk summary rejects invalid signal input", () => {
     () =>
       buildCompositeRiskSummary([
         {
-          type: RISK_SIGNAL_TYPES.timingLagLoop,
+          type: RISK_SIGNAL_TYPES.timingResponseDelay,
           weight: 1.5,
           occurredAt: "2026-07-11T00:00:01.000Z",
         },
@@ -119,85 +169,114 @@ test("composite risk summary rejects invalid signal input", () => {
   );
 });
 
-test("lag-loop detector emits timing risk signal for sustained delay", () => {
-  const signal = detectLagLoopRiskSignal([
+test("response-delay detector emits only for repeated conversational delays", () => {
+  const signal = detectResponseDelayRiskSignal([
     {
-      occurredAt: "2026-07-11T00:00:01.000Z",
-      eventLoopLagMs: 180,
+      questionEndedAt: "2026-07-11T00:00:01.000Z",
+      answerStartedAt: "2026-07-11T00:00:05.000Z",
     },
     {
-      occurredAt: "2026-07-11T00:00:02.000Z",
-      eventLoopLagMs: 220,
+      questionEndedAt: "2026-07-11T00:00:10.000Z",
+      answerStartedAt: "2026-07-11T00:00:14.500Z",
     },
     {
-      occurredAt: "2026-07-11T00:00:03.000Z",
-      eventLoopLagMs: 260,
+      questionEndedAt: "2026-07-11T00:00:20.000Z",
+      answerStartedAt: "2026-07-11T00:00:25.000Z",
     },
   ]);
 
   assert.deepEqual(signal, {
-    type: RISK_SIGNAL_TYPES.timingLagLoop,
-    weight: 0.65,
-    occurredAt: "2026-07-11T00:00:03.000Z",
+    type: RISK_SIGNAL_TYPES.timingResponseDelay,
+    weight: 0.45,
+    occurredAt: "2026-07-11T00:00:25.000Z",
     metadata: {
       sampleCount: 3,
-      thresholdMs: 150,
-      minimumConsecutiveSamples: 3,
-      consecutiveLagCount: 3,
-      maxLagMs: 260,
+      delayedResponseCount: 3,
+      thresholdMs: 3_000,
+      medianResponseDelayMs: 4_500,
     },
   });
 });
 
-test("lag-loop detector ignores isolated delay spikes", () => {
-  const signal = detectLagLoopRiskSignal([
+test("response-delay detector ignores isolated conversational delay", () => {
+  const signal = detectResponseDelayRiskSignal([
     {
-      occurredAt: "2026-07-11T00:00:01.000Z",
-      eventLoopLagMs: 200,
+      questionEndedAt: "2026-07-11T00:00:01.000Z",
+      answerStartedAt: "2026-07-11T00:00:05.000Z",
     },
     {
-      occurredAt: "2026-07-11T00:00:02.000Z",
-      eventLoopLagMs: 30,
+      questionEndedAt: "2026-07-11T00:00:10.000Z",
+      answerStartedAt: "2026-07-11T00:00:10.500Z",
     },
     {
-      occurredAt: "2026-07-11T00:00:03.000Z",
-      eventLoopLagMs: 210,
+      questionEndedAt: "2026-07-11T00:00:20.000Z",
+      answerStartedAt: "2026-07-11T00:00:20.800Z",
     },
   ]);
 
   assert.equal(signal, null);
 });
 
-test("lag-loop detector rejects invalid timing samples", () => {
+test("response-delay detector rejects invalid conversational samples", () => {
   assert.throws(
     () =>
-      detectLagLoopRiskSignal([
+      detectResponseDelayRiskSignal([
         {
-          occurredAt: "not-a-date",
-          eventLoopLagMs: 200,
-        },
-        {
-          occurredAt: "2026-07-11T00:00:02.000Z",
-          eventLoopLagMs: 200,
-        },
-        {
-          occurredAt: "2026-07-11T00:00:03.000Z",
-          eventLoopLagMs: 200,
+          questionEndedAt: "not-a-date",
+          answerStartedAt: "2026-07-11T00:00:03.000Z",
         },
       ]),
-    /occurredAt must be a valid timestamp/,
+    /questionEndedAt must be a valid timestamp/,
   );
 
   assert.throws(
     () =>
-      detectLagLoopRiskSignal([
+      detectResponseDelayRiskSignal([
         {
-          occurredAt: "2026-07-11T00:00:01.000Z",
-          eventLoopLagMs: -1,
+          questionEndedAt: "2026-07-11T00:00:03.000Z",
+          answerStartedAt: "2026-07-11T00:00:01.000Z",
         },
       ]),
-    /eventLoopLagMs must be a non-negative number/,
+    /answerStartedAt must be after questionEndedAt/,
   );
+});
+
+test("editor aggregate mapper emits bounded derived signals without raw text", () => {
+  const signals = createEditorRiskSignals({
+    sessionId: "session-1",
+    participantId: "participant-1",
+    documentId: "document-1",
+    windowStartedAt: "2026-07-11T00:00:00.000Z",
+    windowEndedAt: "2026-07-11T00:00:02.000Z",
+    insertEventCount: 2,
+    deleteEventCount: 0,
+    pasteBlockedCount: 1,
+    atomicInsertCount: 1,
+    maxInsertSize: 80,
+  });
+
+  assert.deepEqual(signals, [
+    {
+      type: RISK_SIGNAL_TYPES.editorPasteBlocked,
+      weight: 0.65,
+      occurredAt: "2026-07-11T00:00:02.000Z",
+      metadata: {
+        documentId: "document-1",
+        pasteBlockedCount: 1,
+      },
+    },
+    {
+      type: RISK_SIGNAL_TYPES.editorAtomicInsert,
+      weight: 0.7,
+      occurredAt: "2026-07-11T00:00:02.000Z",
+      metadata: {
+        documentId: "document-1",
+        atomicInsertCount: 1,
+        maxInsertSize: 80,
+      },
+    },
+  ]);
+  assert.equal(JSON.stringify(signals).includes("sourceCode"), false);
 });
 
 test("native risk mapper emits capture-affinity and VM signals", () => {
@@ -226,6 +305,12 @@ test("native risk mapper emits capture-affinity and VM signals", () => {
         ],
       },
     ],
+    prohibitedApplicationMatches: [
+      {
+        ruleId: "interview.assistant",
+        matchKinds: ["process_name", "window_title"],
+      },
+    ],
   });
 
   assert.deepEqual(signals, [
@@ -241,7 +326,7 @@ test("native risk mapper emits capture-affinity and VM signals", () => {
     },
     {
       type: RISK_SIGNAL_TYPES.nativeVmSignal,
-      weight: 0.5,
+      weight: 0.35,
       occurredAt: "2026-07-11T00:00:01.000Z",
       metadata: {
         platform: "windows",
@@ -253,7 +338,68 @@ test("native risk mapper emits capture-affinity and VM signals", () => {
         ],
       },
     },
+    {
+      type: RISK_SIGNAL_TYPES.nativeProhibitedApplication,
+      weight: 0.85,
+      occurredAt: "2026-07-11T00:00:01.000Z",
+      metadata: {
+        ruleId: "interview.assistant",
+        matchKinds: ["process_name", "window_title"],
+      },
+    },
   ]);
+});
+
+test("native environment mapper reports remote sessions and topology changes without flagging a stable multi-monitor setup", () => {
+  const remoteSignals = createNativeRiskSignals({
+    occurredAt: "2026-07-11T00:00:01.000Z",
+    environmentReports: [
+      {
+        platform: "windows",
+        remoteSession: true,
+        monitorCount: 2,
+        previousMonitorCount: 1,
+      },
+    ],
+  });
+
+  assert.deepEqual(remoteSignals.map((signal) => signal.type), [
+    RISK_SIGNAL_TYPES.nativeRemoteSession,
+    RISK_SIGNAL_TYPES.nativeDisplayTopologyChange,
+  ]);
+  assert.deepEqual(createNativeRiskSignals({
+    occurredAt: "2026-07-11T00:00:01.000Z",
+    environmentReports: [
+      {
+        platform: "windows",
+        remoteSession: false,
+        monitorCount: 2,
+      },
+    ],
+  }), []);
+});
+
+test("native VM scoring keeps a lone hypervisor bit weak and raises confidence only for corroborated indicators", () => {
+  const lone = createNativeRiskSignals({
+    occurredAt: "2026-07-11T00:00:01.000Z",
+    virtualizationReports: [{
+      platform: "windows",
+      signals: [{ name: "cpuid.hypervisor_present", detected: true, detail: "vendor=Microsoft Hv" }],
+    }],
+  });
+  const corroborated = createNativeRiskSignals({
+    occurredAt: "2026-07-11T00:00:01.000Z",
+    virtualizationReports: [{
+      platform: "windows",
+      signals: [
+        { name: "cpuid.hypervisor_present", detected: true, detail: "vendor=VMwareVMware" },
+        { name: "firmware.virtual_machine_marker", detected: true, detail: "vendor=vmware" },
+      ],
+    }],
+  });
+
+  assert.equal(lone[0].weight, 0.35);
+  assert.equal(corroborated[0].weight, 0.65);
 });
 
 test("native risk mapper ignores clean native reports", () => {
@@ -362,7 +508,7 @@ test("media risk mapper emits bounded media signals", () => {
     {
       type: RISK_SIGNAL_TYPES.mediaSecondVoice,
       weight: 0.86,
-      occurredAt: "2026-07-11T00:00:10.000Z",
+      occurredAt: "2026-07-11T00:00:05.200Z",
       evidenceObjectId: "recording-evidence-1",
       metadata: {
         confidence: 0.92,
@@ -376,7 +522,7 @@ test("media risk mapper emits bounded media signals", () => {
     {
       type: RISK_SIGNAL_TYPES.mediaFaceMissing,
       weight: 0.752,
-      occurredAt: "2026-07-11T00:00:10.000Z",
+      occurredAt: "2026-07-11T00:00:05.500Z",
       evidenceObjectId: "recording-evidence-1",
       metadata: {
         confidence: 0.88,
@@ -389,7 +535,7 @@ test("media risk mapper emits bounded media signals", () => {
     {
       type: RISK_SIGNAL_TYPES.mediaMultipleFaces,
       weight: 0.855,
-      occurredAt: "2026-07-11T00:00:10.000Z",
+      occurredAt: "2026-07-11T00:00:04.600Z",
       evidenceObjectId: "recording-evidence-1",
       metadata: {
         confidence: 0.91,
@@ -403,7 +549,7 @@ test("media risk mapper emits bounded media signals", () => {
     {
       type: RISK_SIGNAL_TYPES.mediaGazeOffscreen,
       weight: 0.823,
-      occurredAt: "2026-07-11T00:00:10.000Z",
+      occurredAt: "2026-07-11T00:00:06.800Z",
       evidenceObjectId: "recording-evidence-1",
       metadata: {
         confidence: 0.94,

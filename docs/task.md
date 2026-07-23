@@ -391,9 +391,9 @@ Working rule: every implementation task must start by defining the verification 
 
 ### T-04.01 Create `packages/editor-core`
 
-- [~] Add Monaco editor wrapper.
-  - Current implementation exports a stable React `MonacoCollabEditor` host component.
-  - Direct `monaco-editor@0.55.1` was not added because it introduced a `dompurify` audit finding; real Monaco mounting remains pending until a safe version is selected.
+- [x] Add Monaco editor wrapper.
+  - The package mounts `monaco-editor@0.53.0` through the React `MonacoCollabEditor` component.
+  - `monaco-editor@0.55.1` remains rejected because its dependency graph introduced a `dompurify` audit finding.
 - [x] Add Yjs binding.
 - [x] Add awareness cursors and selections.
 - [x] Export a stable `MonacoCollabEditor` component.
@@ -443,20 +443,22 @@ Working rule: every implementation task must start by defining the verification 
 ### T-04.02 Add paste blocking and telemetry
 
 - [x] Block browser paste events in the candidate editor pane.
-- [ ] Disable Monaco paste commands where possible.
-  - Pending until the package has a real Monaco editor mount; the current host blocks DOM paste events.
+- [x] Disable Monaco paste commands where possible.
+  - The candidate editor overrides Monaco's paste action and Ctrl/Cmd+V and Shift+Insert keybindings.
+  - Paste remains enabled for interviewers.
 - [x] Detect large atomic inserts as suspicious even when paste events are bypassed.
-- [~] Log events to the Yjs-derived telemetry path.
-  - Current implementation emits shared raw telemetry events through `EditorTelemetryOptions.onEvent`.
-  - Server-side persistence transport for client-originated paste-block events remains pending with the desktop/API client integration.
+- [x] Log events to the Yjs-derived telemetry path.
+  - Candidate paste attempts send only a `telemetry:paste-blocked` marker through the authenticated collaboration socket.
+  - The collaboration server derives trusted session, participant, document, role, and timestamp context; candidate-supplied identity fields are not accepted.
+  - Raw paste-blocked and atomic-insert events are written to the Redis raw-event stream, while only rolling aggregates are persisted in Postgres.
+  - Large insert size is derived from the applied Yjs text delta, including same-length replacements.
 - Test first:
   - [x] Add DOM paste prevention test.
-  - [ ] Add Monaco command override test.
+  - [x] Add Monaco command override test.
   - [x] Add atomic insert detection test.
 - Done when:
-- [~] Right-click paste, keyboard paste, and simulated atomic inserts are covered by tests.
-    - Browser `paste` events, context-menu paste blocking, and simulated atomic inserts are covered.
-    - Monaco-specific command override coverage is still pending.
+  - [x] Right-click paste, keyboard paste, and simulated atomic inserts are covered by tests.
+    - Browser paste/context-menu paths, Monaco command/keybinding overrides, authenticated paste telemetry, and simulated same-length atomic replacements are covered.
 
 ### Phase 4 Paste Blocking Verification Log
 
@@ -472,6 +474,15 @@ Working rule: every implementation task must start by defining the verification 
 - [x] `npm run test` (`68` tests, `68` passed, `0` failed)
 - [x] `npm run verify`
 - [x] `git diff --check`
+- [x] Completion red tests observed before implementation:
+  - [x] Collaboration tests rejected `telemetry:paste-blocked` and emitted an invalid `insertedCharacterCount` field.
+  - [x] Editor-core tests failed because Monaco guards, incremental text changes, and `sendPasteBlockedTelemetry` did not exist.
+  - [x] Candidate-only enforcement tests failed because interviewer paste was also disabled and interviewer markers were recorded.
+- [x] Completion focused verification:
+  - [x] `node --test --test-isolation=none apps/collab/test/collab.test.mjs apps/collab/test/telemetry.test.mjs` (`23` tests, `23` passed, `0` failed).
+  - [x] `npm run test --workspace @anecites/editor-core` (`30` tests, `30` passed, `0` failed).
+  - [x] `npm run test --workspace @anecites/desktop` (`45` JavaScript tests and `10` Rust tests, all passed).
+- [x] Completion full verification: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, and `npm run test` (`227` JavaScript/Python tests and `10` Rust tests, `237` total, all passed); `npm audit --audit-level=moderate` reported `0` vulnerabilities and `git diff --check` passed.
 
 ### T-04.03 Add code runner client
 
@@ -1027,6 +1038,74 @@ The project does not move to the video module until all tests below pass.
       - [x] Clean media reports now return `riskSummary: null` and do not persist empty summaries.
       - [x] `npm run test --workspace @anecites/media-worker` (`14` tests, `14` passed, `0` failed)
       - [x] Final verification after T-MON-17: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`148` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+  - [x] T-MON-18: Add the first real server-side media-inference runtime.
+    - Test first:
+      - [x] Add pure contract tests for bounded object references, sample windows, rejected raw media/credential fields, and runtime settings.
+      - [x] Add Node client tests for bounded payloads, response sanitization, timeouts, malformed responses, and unavailable gaze.
+      - [x] Run a container smoke test against real MediaPipe and Silero models.
+    - Implemented:
+      - [x] Added `apps/media-inference` with pinned Python dependencies, checksum-verified MediaPipe face model, Silero VAD, bounded FFmpeg extraction, allowlisted object storage, temporary-file cleanup, and authenticated internal HTTP access.
+      - [x] Added a strict `createMediaInferenceClient` boundary in `apps/media-worker`.
+      - [x] Replaced ambiguous fixture `faceConfidence` input with sampled-frame `conditionSupport`; no-face windows no longer imply a fabricated detector confidence.
+      - [x] Kept VAD output separate from second-speaker evidence and kept gaze unavailable without calibration.
+      - [x] Added a private-network-only, resource-bounded, no-outbound-network `media-inference` Compose profile with no host port.
+    - Done when:
+      - [x] The real-model smoke test passes against MinIO using generated silent video.
+      - [x] Focused and repository-wide verification pass.
+      - [x] The verification log records actual test counts and remaining diarization/gaze limitations.
+    - Verification log:
+      - [x] `npm run test --workspace @anecites/media-inference` (`6` tests, `6` passed, `0` failed)
+      - [x] `npm run test --workspace @anecites/media-worker` (`17` tests, `17` passed, `0` failed)
+      - [x] `npm run smoke --workspace @anecites/media-inference` completed a real MinIO download, Silero VAD pass, and MediaPipe face-detection pass.
+      - [x] Docker inspection confirmed no host port, no outbound network, read-only root filesystem, all capabilities dropped, a 2 GiB memory limit, 2 CPU limit, 256 process limit, and no leftover temporary media.
+      - [x] Final verification after T-MON-18: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`203` JavaScript/Python tests and `10` Rust tests, `213` total, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+      - [x] Remaining limitation: VAD is not speaker diarization, so real second-speaker risk remains disabled; real gaze risk also remains disabled until calibrated and evaluated.
+  - [x] T-MON-19: Containerize the RabbitMQ media-worker consumer and wire it to the private inference runtime.
+    - Test first:
+      - [x] Add queue-consumer contract tests for acknowledgement, retry, dead-letter behavior, idempotency, and graceful shutdown before implementing the long-running worker.
+      - [x] Add worker configuration tests for required URLs/secrets and bounded prefetch, retry, delay, and lease settings.
+      - [x] Add a durable-redelivery test proving successful jobs do not repeat inference or create duplicate summaries.
+    - Implemented:
+      - [x] Added manual acknowledgement, confirm-published delayed retries, a sanitized dead-letter queue, bounded payload parsing, and graceful consumer cancellation.
+      - [x] Added `MediaAnalysisJobRun` with canonical payload hashes, lease versions, stale-lease recovery, and transactionally linked risk-summary completion.
+      - [x] Added a non-root, read-only, portless `media-worker` container with separate internal control and inference networks, no MinIO credentials, and bounded CPU, memory, and process limits.
+      - [x] Wired the real face-presence inference client while leaving second-voice and gaze unavailable until diarization and calibrated gaze runtimes exist.
+      - [x] Added a real RabbitMQ smoke test that uploads generated video, executes MediaPipe inference, persists one summary, redelivers the same job, and verifies idempotency.
+    - Verification log:
+      - [x] Shared and database acceptance tests failed before implementation because `jobId` and `MediaAnalysisJobRun` were absent.
+      - [x] Consumer tests failed before implementation because the queue consumer exports were absent.
+      - [x] `npm run test --workspace @anecites/media-worker` (`25` tests, `25` passed, `0` failed).
+      - [x] `npm run smoke:consumer --workspace @anecites/media-worker` passed with real RabbitMQ, PostgreSQL, MinIO, MediaPipe inference, and idempotent redelivery.
+      - [x] Fixed cross-recording MediaPipe timestamp state by using stateless image-mode detection for independently sampled frames; the inference smoke now completes two consecutive real analyses in one container lifetime.
+      - [x] Docker inspection confirmed non-root execution, no host port, read-only root filesystem, all capabilities dropped, no-new-privileges, 512 MiB memory, 1 CPU, 128 process limit, blocked outbound internet, and no MinIO network path.
+      - [x] A real Compose stop produced `media_worker.stopped` after graceful consumer cancellation.
+      - [x] Final verification after T-MON-19: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`212` JavaScript/Python tests and `10` Rust tests, `222` total, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), both real inference smoke tests, and `git diff --check`.
+  - [x] T-MON-20: Publish media-analysis jobs automatically after recording evidence is ready.
+    - Test first:
+      - [x] Add tests that recording completion persists one `EvidenceObject` and confirm-publishes one bounded `MediaAnalysisJob` with a unique `jobId`, without raw media or credentials.
+    - Implemented:
+      - [x] Added a lazy RabbitMQ confirm publisher with a durable queue, persistent messages, deterministic message IDs, bounded contract validation, and graceful shutdown.
+      - [x] Publish only after LiveKit reports `EGRESS_COMPLETE`; failed or incomplete recordings fail closed and do not enqueue analysis.
+      - [x] Publish the existing recording evidence reference and bounded face-presence request only. Raw media, object-store credentials, and unavailable diarization or gaze requests are not included.
+      - [x] Map publication failures to the generic `MEDIA_ANALYSIS_UPSTREAM_ERROR` response without logging queue payloads or secrets.
+    - Verification log:
+      - [x] Focused server media-analysis and session tests (`18` tests, `18` passed, `0` failed).
+      - [x] Final full verification: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, and `npm run test` (`216` JavaScript/Python tests and `10` Rust tests, `226` total, all passed); `npm audit --audit-level=moderate` reported `0` vulnerabilities and `git diff --check` passed.
+    - Webhook completion:
+      - [x] Add an authenticated LiveKit `egress_ended` webhook path for recordings that finish outside the application stop-recording request.
+        - [x] Verify the exact raw request body, signed `Authorization` token, and payload hash with `livekit-server-sdk` before processing the event.
+        - [x] Acknowledge irrelevant, failed, and aborted egress events without publishing; return a retryable failure while recording evidence is not ready.
+        - [x] Reuse the deterministic media-analysis job contract across webhook and stop-route delivery so durable worker idempotency prevents repeated inference.
+        - [x] Red test: all `3` initial webhook tests failed with `404` before the route existed.
+        - [x] `npm run test --workspace @anecites/server` (`54` tests, `54` passed, `0` failed).
+        - [x] Final verification after the webhook: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, and `npm run test` (`220` JavaScript/Python tests and `10` Rust tests, `230` total, all passed); `npm audit --audit-level=moderate` reported `0` vulnerabilities and `git diff --check` passed.
+- [x] Candidate focus monitoring and shared editor workspace controls.
+  - [x] Emit bounded `risk.client.focus_lost` events from the consented Tauri candidate application after a window blur or hidden-document interval of at least one second.
+  - [x] Validate and sanitize focus-loss events in the backend; do not persist window titles, application names, or other raw desktop content.
+  - [x] Add shared editor tabs with an accessible plus control, keyboard tab navigation, a ten-document limit, and per-document collaboration isolation.
+  - [x] Make the interviewer code-editor control toggle the shared editor open and closed for both participants.
+  - [x] A real two-client browser check verified host/candidate join, shared editor opening, tab synchronization, candidate-to-interviewer code synchronization, and shared editor closing with no browser console warnings or errors.
+  - [x] Final verification included in the T-MON-20 verification log above.
 - [x] Hardening and launch-readiness gates.
   - [x] T-HARD-01: Add data-retention configuration and policy.
     - Test first:
@@ -1078,3 +1157,21 @@ The project does not move to the video module until all tests below pass.
       - [x] Documented that unsigned or unauthenticated update paths are not production-ready.
       - [x] Verification: `rg` confirmed signing, provenance, update-channel, rollback, and unsigned-update gate language.
       - [x] Final verification after T-HARD-03 through T-HARD-05: `npm run lint`, `npm run typecheck`, `npm run build`, `npm run verify`, `npm run test` (`149` Node tests and `8` Rust tests, all passed), `npm audit --audit-level=moderate` (`0` vulnerabilities), and `git diff --check`.
+
+## Post-Hardening Monitoring Work
+
+### T-MON-25a - Calibrated-gaze evidence lineage
+
+- [x] Bind each newly created calibration to exactly one active, candidate-track `SessionRecording`.
+- [x] Require explicit gaze-calibration consent before a calibration can start or advance.
+- [x] Abandon an active calibration if its source recording ends or changes; require a fresh calibration for the replacement recording.
+- [x] Keep calibration records to bounded target order and acknowledgement timestamps only. Do not store client landmarks, camera frames, or a gaze verdict in Postgres.
+- [x] Keep gaze inference and `risk.media.gaze_offscreen` unavailable until a calibrated server-side runtime and representative shadow-mode evaluation fixtures exist.
+- Verification:
+  - [x] Applied `20260719113000_gaze_calibration_recording_lineage` to the local database.
+  - [x] `npm run build --workspace @anecites/server`
+  - [x] `node --test --test-isolation=none test/sessions.test.mjs` in `apps/server` (`21` tests, `21` passed)
+  - [x] `npm run test --workspace @anecites/server` (`67` tests, `67` passed)
+  - [x] `npm run test --workspace @anecites/shared` (`45` tests, `45` passed)
+  - [x] `node --test test/schema.test.mjs` in `packages/db` (`11` tests, `11` passed)
+  - [x] `prisma migrate status` confirms the database schema is current.

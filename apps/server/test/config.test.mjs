@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 import { loadServerConfig } from "../dist/index.js";
 
@@ -18,11 +19,17 @@ const validEnv = {
   REPLAY_RETENTION_DAYS: "90",
   TELEMETRY_RETENTION_DAYS: "180",
   RISK_SUMMARY_RETENTION_DAYS: "365",
+  MONITORING_PROHIBITED_APPLICATION_RULES_JSON: "[]",
   MEDIA_ANALYSIS_ENABLED: "true",
+  MEDIA_CONSENT_NOTICE_VERSION: "test-notice-v1",
+  MEDIA_CONSENT_NOTICE_TEXT: "Test-only recording and media-analysis notice.",
   MEDIA_ANALYSIS_QUEUE_NAME: "media-analysis.jobs",
   MEDIA_ANALYSIS_SAMPLE_WINDOW_MS: "10000",
   MEDIA_ANALYSIS_MAX_SAMPLES_PER_RECORDING: "12",
   MEDIA_ANALYSIS_REQUEST_TIMEOUT_MS: "30000",
+  MEDIA_ANALYSIS_SECOND_VOICE_MODE: "disabled",
+  MEDIA_ANALYSIS_GAZE_MODE: "disabled",
+  MEDIA_ANALYSIS_SHADOW_QUEUE_NAME: "media-analysis.shadow.v1.jobs",
   MEDIA_ANALYSIS_SECOND_VOICE_CONFIDENCE_THRESHOLD: "0.8",
   MEDIA_ANALYSIS_FACE_MISSING_CONFIDENCE_THRESHOLD: "0.8",
   MEDIA_ANALYSIS_MULTIPLE_FACES_CONFIDENCE_THRESHOLD: "0.8",
@@ -55,11 +62,23 @@ test("loadServerConfig accepts the required API server environment", () => {
     replayRetentionDays: 90,
     telemetryRetentionDays: 180,
     riskSummaryRetentionDays: 365,
+    monitoringProhibitedApplicationRules: [],
+    monitoringPolicyVersion: "2026-07-17.1",
+    monitoringPolicySigningKeyId: null,
+    monitoringPolicySigningPrivateKeyPkcs8Base64: null,
     mediaAnalysisEnabled: true,
+    mediaConsentNoticeVersion: "test-notice-v1",
+    mediaConsentNoticeText: validEnv.MEDIA_CONSENT_NOTICE_TEXT,
+    mediaConsentNoticeFingerprint: createHash("sha256")
+      .update(validEnv.MEDIA_CONSENT_NOTICE_TEXT, "utf8")
+      .digest("hex"),
     mediaAnalysisQueueName: "media-analysis.jobs",
     mediaAnalysisSampleWindowMs: 10000,
     mediaAnalysisMaxSamplesPerRecording: 12,
     mediaAnalysisRequestTimeoutMs: 30000,
+    mediaAnalysisSecondVoiceMode: "disabled",
+    mediaAnalysisGazeMode: "disabled",
+    mediaAnalysisShadowQueueName: "media-analysis.shadow.v1.jobs",
     mediaAnalysisSecondVoiceConfidenceThreshold: 0.8,
     mediaAnalysisFaceMissingConfidenceThreshold: 0.8,
     mediaAnalysisMultipleFacesConfidenceThreshold: 0.8,
@@ -88,6 +107,18 @@ test("loadServerConfig accepts the required API server environment", () => {
     livekitApiKey: null,
     livekitApiSecret: null,
     livekitTokenTtlSeconds: 3600,
+    objectStorageEndpoint: null,
+    objectStorageBucket: null,
+    objectStorageAccessKeyId: null,
+    objectStorageSecretAccessKey: null,
+    objectStorageRegion: "us-east-1",
+    objectStorageForcePathStyle: true,
+    recordingStorageKeyPrefix: "recordings/livekit",
+    evidenceSignedUrlTtlSeconds: 900,
+    recordingVerificationQueueName: "recording-verification.jobs",
+    recordingCompletenessAbsoluteToleranceMs: 5000,
+    recordingCompletenessRelativeTolerancePercent: 2,
+    recordingVerificationTimeoutMs: 30000,
     livekitRecordingS3Endpoint: null,
     livekitRecordingS3Bucket: null,
     livekitRecordingS3AccessKeyId: null,
@@ -95,6 +126,7 @@ test("loadServerConfig accepts the required API server environment", () => {
     livekitRecordingS3Region: "us-east-1",
     livekitRecordingS3ForcePathStyle: true,
     livekitRecordingKeyPrefix: "recordings/livekit",
+    livekitRecordingAutoLifecycleEnabled: false,
   });
 });
 
@@ -214,10 +246,18 @@ test("loadServerConfig validates media-analysis settings", () => {
     ...validEnv,
     MEDIA_ANALYSIS_ENABLED: "",
     MEDIA_ANALYSIS_QUEUE_NAME: "",
+    MEDIA_ANALYSIS_SECOND_VOICE_MODE: "",
+    MEDIA_ANALYSIS_GAZE_MODE: "",
+    MEDIA_ANALYSIS_SHADOW_QUEUE_NAME: "",
   });
 
   assert.equal(disabledByDefault.mediaAnalysisEnabled, false);
+  assert.equal(disabledByDefault.mediaConsentNoticeVersion, "test-notice-v1");
+  assert.equal(disabledByDefault.mediaConsentNoticeText, validEnv.MEDIA_CONSENT_NOTICE_TEXT);
   assert.equal(disabledByDefault.mediaAnalysisQueueName, "media-analysis.jobs");
+  assert.equal(disabledByDefault.mediaAnalysisSecondVoiceMode, "disabled");
+  assert.equal(disabledByDefault.mediaAnalysisGazeMode, "disabled");
+  assert.equal(disabledByDefault.mediaAnalysisShadowQueueName, "media-analysis.shadow.v1.jobs");
 
   assert.throws(
     () =>
@@ -235,6 +275,43 @@ test("loadServerConfig validates media-analysis settings", () => {
         MEDIA_ANALYSIS_QUEUE_NAME: "../unsafe",
       }),
     /MEDIA_ANALYSIS_QUEUE_NAME must contain only/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        MEDIA_ANALYSIS_SECOND_VOICE_MODE: "review",
+      }),
+    /MEDIA_ANALYSIS_SECOND_VOICE_MODE must be one of: disabled, shadow/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        MEDIA_ANALYSIS_GAZE_MODE: "review",
+      }),
+    /MEDIA_ANALYSIS_GAZE_MODE must be one of: disabled, shadow/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        MEDIA_ANALYSIS_ENABLED: "false",
+        MEDIA_ANALYSIS_GAZE_MODE: "shadow",
+      }),
+    /MEDIA_ANALYSIS_GAZE_MODE=shadow requires MEDIA_ANALYSIS_ENABLED=true/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        MEDIA_ANALYSIS_SHADOW_QUEUE_NAME: validEnv.MEDIA_ANALYSIS_QUEUE_NAME,
+      }),
+    /MEDIA_ANALYSIS_SHADOW_QUEUE_NAME must differ from MEDIA_ANALYSIS_QUEUE_NAME/,
   );
 
   assert.throws(
@@ -271,6 +348,84 @@ test("loadServerConfig validates media-analysis settings", () => {
         MEDIA_ANALYSIS_SECOND_VOICE_CONFIDENCE_THRESHOLD: "1.1",
       }),
     /MEDIA_ANALYSIS_SECOND_VOICE_CONFIDENCE_THRESHOLD must be between 0 and 1/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        NODE_ENV: "production",
+        MEDIA_ANALYSIS_ENABLED: "false",
+        MEDIA_CONSENT_NOTICE_VERSION: "",
+      }),
+    /MEDIA_CONSENT_NOTICE_VERSION is required in production/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        NODE_ENV: "production",
+        MEDIA_CONSENT_NOTICE_TEXT: "",
+      }),
+    /MEDIA_CONSENT_NOTICE_TEXT is required in production/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        MEDIA_CONSENT_NOTICE_TEXT: "x".repeat(4001),
+      }),
+    /MEDIA_CONSENT_NOTICE_TEXT must contain at most 4000 characters/,
+  );
+});
+
+test("loadServerConfig validates bounded prohibited application rules", () => {
+  const config = loadServerConfig({
+    ...validEnv,
+    MONITORING_PROHIBITED_APPLICATION_RULES_JSON: JSON.stringify([
+      {
+        id: "Interview.Assistant",
+        processNames: ["Assistant.EXE"],
+        windowTitleContains: ["Interview Helper"],
+      },
+    ]),
+  });
+
+  assert.deepEqual(config.monitoringProhibitedApplicationRules, [
+    {
+      id: "interview.assistant",
+      processNames: ["assistant.exe"],
+      windowTitleContains: ["interview helper"],
+    },
+  ]);
+
+  assert.throws(
+    () => loadServerConfig({
+      ...validEnv,
+      MONITORING_PROHIBITED_APPLICATION_RULES_JSON: "not-json",
+    }),
+    /must be valid JSON/,
+  );
+  assert.throws(
+    () => loadServerConfig({
+      ...validEnv,
+      MONITORING_PROHIBITED_APPLICATION_RULES_JSON: JSON.stringify([
+        { id: "empty-rule", processNames: [], windowTitleContains: [] },
+      ]),
+    }),
+    /must contain at least one matcher/,
+  );
+  assert.throws(
+    () => loadServerConfig({
+      ...validEnv,
+      NODE_ENV: "production",
+      MONITORING_PROHIBITED_APPLICATION_RULES_JSON: JSON.stringify([
+        { id: "fixture.assistant", processNames: ["fixture.exe"] },
+      ]),
+    }),
+    /signed monitoring policy is required/,
   );
 });
 
@@ -318,6 +473,14 @@ test("loadServerConfig validates LiveKit settings", () => {
   assert.equal(config.livekitApiSecret, "devsecret");
   assert.equal(config.livekitTokenTtlSeconds, 900);
 
+  assert.equal(
+    loadServerConfig({
+      ...validEnv,
+      S3_ENDPOINT: "http://127.0.0.1:9000",
+    }).livekitRecordingS3Endpoint,
+    null,
+  );
+
   assert.throws(
     () =>
       loadServerConfig({
@@ -355,6 +518,43 @@ test("loadServerConfig validates LiveKit settings", () => {
   assert.equal(recordingConfig.livekitRecordingS3Region, "us-west-2");
   assert.equal(recordingConfig.livekitRecordingS3ForcePathStyle, false);
   assert.equal(recordingConfig.livekitRecordingKeyPrefix, "custom/livekit");
+  assert.equal(recordingConfig.livekitRecordingAutoLifecycleEnabled, false);
+
+  assert.equal(
+    loadServerConfig({
+      ...validEnv,
+      LIVEKIT_URL: "ws://127.0.0.1:7880",
+      LIVEKIT_API_KEY: "devkey",
+      LIVEKIT_API_SECRET: "devsecret_livekit_local_minimum_32_chars",
+      LIVEKIT_RECORDING_S3_ENDPOINT: "http://minio:9000",
+      S3_BUCKET: "anecites-dev",
+      S3_ACCESS_KEY_ID: "anecites",
+      S3_SECRET_ACCESS_KEY: "anecites_dev_password",
+      LIVEKIT_RECORDING_AUTO_LIFECYCLE_ENABLED: "true",
+    }).livekitRecordingAutoLifecycleEnabled,
+    true,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        LIVEKIT_URL: "ws://127.0.0.1:7880",
+        LIVEKIT_API_KEY: "devkey",
+        LIVEKIT_API_SECRET: "devsecret_livekit_local_minimum_32_chars",
+        LIVEKIT_RECORDING_AUTO_LIFECYCLE_ENABLED: "true",
+      }),
+    /LIVEKIT_RECORDING_AUTO_LIFECYCLE_ENABLED requires configured LiveKit credentials and recording storage/,
+  );
+
+  assert.throws(
+    () =>
+      loadServerConfig({
+        ...validEnv,
+        LIVEKIT_RECORDING_AUTO_LIFECYCLE_ENABLED: "sometimes",
+      }),
+    /LIVEKIT_RECORDING_AUTO_LIFECYCLE_ENABLED must be true or false/,
+  );
 });
 
 test("loadServerConfig rejects unsafe Judge0 execution limits", () => {

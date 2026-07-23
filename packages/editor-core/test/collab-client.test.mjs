@@ -118,6 +118,65 @@ test("editor-core waits for the authorized collab snapshot before reporting read
   }
 });
 
+test("editor-core sends paste-blocked telemetry through the authenticated collab socket", async () => {
+  const rawEvents = [];
+  const aggregates = [];
+  const collab = createCollabServer({
+    authJwtSecret,
+    telemetry: {
+      recordRawEvent(event) {
+        rawEvents.push(event);
+      },
+      flushAggregate(aggregate) {
+        aggregates.push(aggregate);
+      },
+      now: () => new Date("2026-07-17T10:00:00.000Z"),
+    },
+  });
+  collab.httpServer.listen(0, "127.0.0.1");
+  await once(collab.httpServer, "listening");
+
+  const address = collab.httpServer.address();
+  assert.equal(typeof address, "object");
+  assert(address);
+
+  const document = createEditorYjsDocument({
+    documentId: "document-a",
+  });
+  const token = await mintToken("candidate-1", "candidate");
+  const client = connectEditorCollabSession({
+    baseUrl: `ws://127.0.0.1:${address.port}`,
+    sessionId: "session-a",
+    token,
+    document,
+    WebSocketConstructor: WebSocket,
+  });
+
+  try {
+    await client.ready;
+    client.sendPasteBlockedTelemetry();
+    await waitUntil(() => rawEvents.length === 1 && aggregates.length === 1);
+
+    assert.deepEqual(rawEvents[0], {
+      kind: "raw",
+      type: "editor.paste_blocked",
+      storagePolicy: "object-storage-only",
+      sessionId: "session-a",
+      participantId: "candidate-1",
+      documentId: "document-a",
+      occurredAt: "2026-07-17T10:00:00.000Z",
+      source: "paste_event",
+    });
+    assert.equal(aggregates[0].pasteBlockedCount, 1);
+    assert.equal(aggregates[0].insertEventCount, 0);
+    assert.equal(aggregates[0].atomicInsertCount, 0);
+  } finally {
+    client.close();
+    document.destroy();
+    await collab.close();
+  }
+});
+
 async function mintToken(subject, role) {
   return new SignJWT({ role })
     .setProtectedHeader({ alg: "HS256" })

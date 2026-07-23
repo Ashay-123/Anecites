@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyEditorTextChanges,
   createEditorTelemetryObserver,
   createEditorYjsDocument,
 } from "../dist/index.js";
@@ -52,6 +53,36 @@ test("editor telemetry observer ignores small inserts", () => {
   document.text.insert(0, "small");
 
   assert.deepEqual(telemetryEvents, []);
+
+  observer.destroy();
+  document.destroy();
+});
+
+test("incremental editor changes preserve existing Yjs text and insertion size", () => {
+  const document = createEditorYjsDocument({
+    documentId: "document-a",
+    initialText: "const answer = 4;",
+  });
+  const events = [];
+  const observer = createEditorTelemetryObserver(document, {
+    sessionId: "session-a",
+    participantId: "candidate-a",
+    atomicInsertThreshold: 5,
+    onEvent(event) {
+      events.push(event);
+    },
+  });
+
+  applyEditorTextChanges(document, [
+    {
+      rangeOffset: 15,
+      rangeLength: 1,
+      text: "42",
+    },
+  ]);
+
+  assert.equal(document.text.toString(), "const answer = 42;");
+  assert.deepEqual(events, []);
 
   observer.destroy();
   document.destroy();

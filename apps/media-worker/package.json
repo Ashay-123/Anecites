@@ -16,12 +16,15 @@
     "build": "npm run build:deps && tsc -p tsconfig.json",
     "typecheck": "npm run build:deps && tsc -p tsconfig.json --noEmit",
     "lint": "npm run typecheck",
-    "test": "npm run build && node --test --test-isolation=none test/*.test.mjs"
+    "test": "npm run build && node --test --test-isolation=none test/*.test.mjs",
+    "start": "node dist/worker.js",
+    "smoke:consumer": "npm run build && node scripts/smoke-consumer.mjs"
   },
   "dependencies": {
     "@anecites/db": "0.0.0",
     "@anecites/server": "0.0.0",
-    "@anecites/shared": "0.0.0"
+    "@anecites/shared": "0.0.0",
+    "amqplib": "2.0.1"
   },
   "devDependencies": {
     "@types/node": "24.13.2"
